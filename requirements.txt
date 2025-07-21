@@ -1,4 +1,4 @@
-fastapi
+flask
 uvicorn
 requests
 google-generativeai  # Gemini SDK
