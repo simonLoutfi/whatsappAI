@@ -3,10 +3,22 @@ from whatsapp_handler import send_whatsapp_message
 from gemini_handler import classify_message, get_gemini_answer
 from supabase_handler import get_faq_and_stock, insert_order
 from sessions import set_session, get_session, clear_session
-from whatsapp_handler import send_whatsapp_message
-from supabase_handler import insert_order
 
 app = Flask(__name__)
+
+VERIFY_TOKEN = "verify_token_92XctbK0PqLj7Yf8"  
+
+@app.route('/webhook', methods=['GET'])
+def verify():
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        return challenge, 200
+    else:
+        return 'Verification failed', 403
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -28,14 +40,13 @@ def webhook():
     else:
         send_whatsapp_message(phone_number, "Sorry, I couldn't understand your request.")
 
-
     return jsonify({"status": "success"}), 200
+
 
 def handle_order(phone, incoming_message):
     step = get_session(phone, "step")
 
     if step is None:
-        # Start order flow
         set_session(phone, "step", "product")
         send_whatsapp_message(phone, "What product do you want to order?")
         return
@@ -57,17 +68,13 @@ def handle_order(phone, incoming_message):
         quantity = get_session(phone, "quantity")
         address = incoming_message
 
-        # Save order
         insert_order(phone, product, quantity, address)
-
-        # End session
         clear_session(phone)
 
         send_whatsapp_message(phone, f"✅ Your order for {quantity} x {product} to be delivered at '{address}' has been placed. Thank you!")
         return
 
     else:
-        # Reset in case of unexpected step
         clear_session(phone)
         send_whatsapp_message(phone, "Let's start over. What product do you want to order?")
         set_session(phone, "step", "product")
