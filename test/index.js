@@ -52,9 +52,9 @@ app.post('/', async (req, res) => {
 
 async function handleOrder(phone, incomingMessage) {
   const step = getSession(phone, 'step');
-  const { stock } = await getFaqAndStock(); // Get available products
+  const { stock } = await getFaqAndStock();
 
-  // If user sends "cancel" at any point, reset the flow
+  // Handle cancellation at any point
   if (incomingMessage.toLowerCase() === 'cancel') {
     clearSession(phone);
     await sendWhatsAppMessage(phone, "Order cancelled. How can I help you?");
@@ -89,7 +89,7 @@ async function handleOrder(phone, incomingMessage) {
   }
 
   if (step === 'quantity') {
-    // Validate quantity is a number and within available stock
+    // Validate quantity
     const quantity = parseInt(incomingMessage);
     const product = getSession(phone, 'product');
     const productStock = stock.find(item => item.name === product);
@@ -112,24 +112,41 @@ async function handleOrder(phone, incomingMessage) {
   }
 
   if (step === 'address') {
-    // Validate address isn't empty
+    // Validate address
     if (incomingMessage.trim().length < 10) {
       await sendWhatsAppMessage(phone, "Please provide a complete address (at least 10 characters).");
       return;
     }
-
+    
+    setSession(phone, 'address', incomingMessage);
+    setSession(phone, 'step', 'confirm');
+    
     const product = getSession(phone, 'product');
     const quantity = getSession(phone, 'quantity');
-    const address = incomingMessage;
+    
+    await sendWhatsAppMessage(phone,
+      `Please confirm your order:\n\n${quantity} x ${product}\nAddress: ${incomingMessage}\n\nReply "confirm" to proceed or "cancel" to abort.`);
+    return;
+  }
 
-    try {
-      await insertOrder(phone, product, quantity, address);
+  if (step === 'confirm') {
+    if (incomingMessage.toLowerCase() === 'confirm') {
+      const product = getSession(phone, 'product');
+      const quantity = getSession(phone, 'quantity');
+      const address = getSession(phone, 'address');
+
+      try {
+        await insertOrder(phone, product, quantity, address);
+        clearSession(phone);
+        await sendWhatsAppMessage(phone, 
+          `✅ Order confirmed!\n\nProduct: ${quantity} x ${product}\nAddress: ${address}\n\nThank you for your order!`);
+      } catch (error) {
+        console.error('Order insertion error:', error);
+        await sendWhatsAppMessage(phone, "Failed to process your order. Please try again later.");
+      }
+    } else {
       clearSession(phone);
-      await sendWhatsAppMessage(phone, 
-        `✅ Order confirmed!\n\nProduct: ${quantity} x ${product}\nAddress: ${address}\n\nThank you for your order!`);
-    } catch (error) {
-      console.error('Order insertion error:', error);
-      await sendWhatsAppMessage(phone, "Failed to process your order. Please try again later.");
+      await sendWhatsAppMessage(phone, "Order cancelled. How can I help you?");
     }
     return;
   }
