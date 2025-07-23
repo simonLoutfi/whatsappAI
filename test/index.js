@@ -61,19 +61,27 @@ async function handleOrder(phone, incomingMessage) {
     return;
   }
 
-  if (!step) {
-    // Start new order flow
-    const availableProducts = stock.map(item => `- ${item.name} (${item.quantity} available)`).join('\n');
-    setSession(phone, 'step', 'product');
-    await sendWhatsAppMessage(phone, 
-      `What product do you want to order? Available products:\n${availableProducts}\n\nType "cancel" to stop.`);
+  // Check if we're already in an order flow
+  if (step && step !== 'product') {
+    // Continue with existing order flow
+    await continueOrderFlow(phone, incomingMessage, step, stock);
     return;
   }
 
+  // Start new order flow
+  const availableProducts = stock.map(item => `- ${item.name} (SKU: ${item.sku}, ${item.quantity} available)`).join('\n');
+  setSession(phone, 'step', 'product');
+  await sendWhatsAppMessage(phone, 
+    `What product do you want to order? Available products:\n${availableProducts}\n\nType "cancel" to stop.`);
+}
+
+async function continueOrderFlow(phone, incomingMessage, step, stock) {
   if (step === 'product') {
-    // Validate product exists
+    // Enhanced product matching - checks both name and SKU
     const selectedProduct = stock.find(item => 
-      item.name.toLowerCase() === incomingMessage.toLowerCase());
+      item.name.toLowerCase() === incomingMessage.toLowerCase() ||
+      item.sku.toString() === incomingMessage.trim()
+    );
     
     if (!selectedProduct) {
       await sendWhatsAppMessage(phone, 
@@ -82,6 +90,7 @@ async function handleOrder(phone, incomingMessage) {
     }
     
     setSession(phone, 'product', selectedProduct.name);
+    setSession(phone, 'product_sku', selectedProduct.sku);
     setSession(phone, 'step', 'quantity');
     await sendWhatsAppMessage(phone, 
       `How many units of ${selectedProduct.name} do you want? (Max ${selectedProduct.quantity})`);
@@ -132,14 +141,15 @@ async function handleOrder(phone, incomingMessage) {
   if (step === 'confirm') {
     if (incomingMessage.toLowerCase() === 'confirm') {
       const product = getSession(phone, 'product');
+      const sku = getSession(phone, 'product_sku');
       const quantity = getSession(phone, 'quantity');
       const address = getSession(phone, 'address');
 
       try {
-        await insertOrder(phone, product, quantity, address);
+        await insertOrder(phone, `${product} (SKU: ${sku})`, quantity, address);
         clearSession(phone);
         await sendWhatsAppMessage(phone, 
-          `✅ Order confirmed!\n\nProduct: ${quantity} x ${product}\nAddress: ${address}\n\nThank you for your order!`);
+          `✅ Order confirmed!\n\nProduct: ${quantity} x ${product}\nSKU: ${sku}\nAddress: ${address}\n\nThank you for your order!`);
       } catch (error) {
         console.error('Order insertion error:', error);
         await sendWhatsAppMessage(phone, "Failed to process your order. Please try again later.");

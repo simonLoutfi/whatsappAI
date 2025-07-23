@@ -6,12 +6,11 @@ const genAI = new GoogleGenerativeAI(apiKey);
 async function classifyMessage(message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-  const prompt = `Classify the message strictly as 'order' or 'faq': ${message}`;
+  const prompt = `Classify this message strictly as 'order' if it contains words like 'order', 'buy', 'purchase', 'want to get', or similar purchasing intent. Otherwise classify as 'faq': ${message}`;
 
   try {
     const result = await model.generateContent(prompt);
-    const category = result.response.text().toLowerCase();
-
+    const category = result.response.text().toLowerCase().trim();
     return category.includes('order') ? 'order' : 'faq';
   } catch (err) {
     console.error('Gemini classifyMessage error:', err);
