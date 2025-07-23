@@ -4,7 +4,7 @@ TOKEN = "EAAULrxtQZB0oBPJLYz8Jdy20ymSnKil2a9NskWokVPH7ZBGr0NFUzWfHWx3kZAYe7VnhHG
 PHONE_NUMBER_ID = "1290492105934901"
 
 def send_whatsapp_message(to, message):
-    url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
+    url = f"https://graph.facebook.com/v23.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {TOKEN}",
         "Content-Type": "application/json"
