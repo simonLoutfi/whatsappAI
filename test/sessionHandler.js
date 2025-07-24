@@ -9,10 +9,15 @@ function setSession(phone, key, value) {
   }
   sessionStore[phone].data[key] = value;
   sessionStore[phone].timestamp = Date.now();
+  console.log(`Session set for ${phone}:`, { [key]: value }); // Debug log
 }
 
 function getSession(phone, key) {
-  if (!sessionStore[phone]) return undefined;
+  if (!sessionStore[phone]) {
+    console.log(`No session found for ${phone}`); // Debug log
+    return undefined;
+  }
+  console.log(`Session get for ${phone}:`, { [key]: sessionStore[phone].data[key] }); // Debug log
   return sessionStore[phone].data[key];
 }
 

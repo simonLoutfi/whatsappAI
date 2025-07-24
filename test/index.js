@@ -31,6 +31,14 @@ app.post('/', async (req, res) => {
     const messageText = body.entry[0].changes[0].value.messages[0].text.body;
     const phone = body.entry[0].changes[0].value.messages[0].from;
 
+    // Check if we're in an active order session first
+    const currentStep = getSession(phone, 'step');
+    if (currentStep && currentStep !== 'product') {
+      await handleOrder(phone, messageText);
+      return res.status(200).json({ status: 'success' });
+    }
+
+    // Only classify if not in an order flow
     const classification = await classifyMessage(messageText);
 
     if (classification === 'order') {
@@ -49,15 +57,21 @@ app.post('/', async (req, res) => {
     res.status(400).send('No valid message received');
   }
 });
-
 async function handleOrder(phone, incomingMessage) {
+  console.log(`Handling order for ${phone}, message: ${incomingMessage}`); // Debug log
   const step = getSession(phone, 'step');
+  console.log(`Current step for ${phone}: ${step}`); // Debug log
   const { stock } = await getFaqAndStock();
 
   // Handle cancellation at any point
   if (incomingMessage.toLowerCase() === 'cancel') {
     clearSession(phone);
     await sendWhatsAppMessage(phone, "Order cancelled. How can I help you?");
+    return;
+  }
+  if (step) {
+    console.log(`Continuing order flow for ${phone} at step ${step}`); // Debug log
+    await continueOrderFlow(phone, incomingMessage, step, stock);
     return;
   }
 
