@@ -98,4 +98,4 @@ async function insertOrderWithItems(
   }
 }
 
-module.exports = { getFaqAndStock, insertOrder };
+module.exports = { getFaqAndStock, insertOrderWithItems };
