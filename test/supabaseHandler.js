@@ -44,8 +44,7 @@ async function insertOrderWithItems(
         customer_whatsapp,
         notes,
         total_amount: totalAmount,
-        status: 'pending',
-        created_by: SERVICE_USER_ID
+        status: 'pending'
       })
       .select()
       .single();
