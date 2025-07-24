@@ -31,9 +31,9 @@ app.post('/', async (req, res) => {
     const messageText = body.entry[0].changes[0].value.messages[0].text.body;
     const phone = body.entry[0].changes[0].value.messages[0].from;
 
-    // Check if we're in an active order session first
+    // FIRST check if we're in an active order session
     const currentStep = getSession(phone, 'step');
-    if (currentStep && currentStep !== 'product') {
+    if (currentStep) {
       await handleOrder(phone, messageText);
       return res.status(200).json({ status: 'success' });
     }
@@ -57,6 +57,7 @@ app.post('/', async (req, res) => {
     res.status(400).send('No valid message received');
   }
 });
+
 async function handleOrder(phone, incomingMessage) {
   console.log(`Handling order for ${phone}, message: ${incomingMessage}`); // Debug log
   const step = getSession(phone, 'step');
