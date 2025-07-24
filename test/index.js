@@ -2,7 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const { sendWhatsAppMessage } = require('./whatsappHandler');
 const { classifyMessage, getGeminiAnswer } = require('./geminiHandler');
-const { getFaqAndStock, insertOrder } = require('./supabaseHandler');
+const { getFaqAndStock, insertOrderWithItems } = require('./supabaseHandler');
 const { getSession, setSession, clearSession } = require('./sessionHandler');
 
 const app = express();
