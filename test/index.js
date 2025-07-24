@@ -202,37 +202,46 @@ async function continueOrderFlow(phone, incomingMessage, step, stock) {
     return;
   }
 
-  if (step === 'confirm') {
-    if (incomingMessage.toLowerCase() === 'confirm') {
-      try {
-        await insertOrder(
-          getSession(phone, 'customer_phone'),
-          phone, // WhatsApp number
-          getSession(phone, 'customer_name'),
-          getSession(phone, 'product'),
-          getSession(phone, 'quantity'),
-          getSession(phone, 'address'),
-          getSession(phone, 'notes'),
-          getSession(phone, 'product_price') * getSession(phone, 'quantity')
-        );
-        
-        clearSession(phone);
-        await sendWhatsAppMessage(phone, 
-          `✅ *Order Confirmed!*\n\n` +
-          `Your order has been placed successfully.\n` +
-          `We'll contact you shortly with delivery details.\n\n` +
-          `Thank you for your purchase!`);
-      } catch (error) {
-        console.error('Order insertion error:', error);
-        await sendWhatsAppMessage(phone, 
-          "❌ Failed to process your order. Please try again later or contact support.");
-      }
-    } else {
+if (step === 'confirm') {
+  if (incomingMessage.toLowerCase() === 'confirm') {
+    try {
+      const productPrice = getSession(phone, 'product_price');
+      const quantity = getSession(phone, 'quantity');
+      const totalAmount = productPrice * quantity;
+      
+      const orderData = {
+        customer_phone: getSession(phone, 'customer_phone'),
+        customer_whatsapp: phone,
+        customer_name: getSession(phone, 'customer_name'),
+        product: getSession(phone, 'product'),
+        quantity: quantity,
+        address: getSession(phone, 'address'),
+        notes: getSession(phone, 'notes'),
+        total_amount: totalAmount
+      };
+
+      const result = await insertOrder(...Object.values(orderData));
+      
       clearSession(phone);
-      await sendWhatsAppMessage(phone, "Order cancelled. How can I help you?");
+      await sendWhatsAppMessage(phone, 
+        `✅ *Order Confirmed!*\n\n` +
+        `Order #: ${result.order_number}\n` +
+        `Amount: $${totalAmount.toFixed(2)}\n` +
+        `Status: Pending\n\n` +
+        `We'll contact you shortly.`);
+    } catch (error) {
+      console.error('Order failed:', error);
+      await sendWhatsAppMessage(phone,
+        `❌ Order Failed\n\n` +
+        `Error: ${error.message}\n` +
+        `Please contact support with this reference: ${Date.now()}`);
     }
-    return;
+  } else {
+    clearSession(phone);
+    await sendWhatsAppMessage(phone, "Order cancelled.");
   }
+  return;
+}
 
   // Fallback for unexpected states
   clearSession(phone);
