@@ -16,22 +16,39 @@ async function getFaqAndStock() {
   return { faq, stock };
 }
 
-async function insertOrder(phone, product, quantity, address) {
+async function insertOrder(
+  customer_phone,
+  customer_whatsapp,
+  customer_name,
+  product,
+  quantity,
+  address,
+  notes = '',
+  total_amount = 0
+) {
   const order = {
-    phone,
-    product,
-    quantity,
+    customer_name,
+    customer_phone,
+    customer_whatsapp,
+    product: `${product} (${quantity} units)`,
+    quantity: parseInt(quantity),
     address,
+    notes,
+    total_amount: parseFloat(total_amount),
+    status: 'pending',
+    order_number: `ORD-${Date.now()}`,
     created_at: new Date().toISOString()
   };
 
-  const { data, error } = await supabase.from('orders').insert([order]);
+  const { data, error } = await supabase.from('orders').insert([order]).select();
 
   if (error) {
     console.error('Error inserting order:', error);
-  } else {
-    console.log('Order inserted:', data);
+    throw error;
   }
+  
+  console.log('Order inserted:', data);
+  return data;
 }
 
 module.exports = { getFaqAndStock, insertOrder };

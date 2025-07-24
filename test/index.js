@@ -92,7 +92,6 @@ async function handleOrder(phone, incomingMessage) {
 
 async function continueOrderFlow(phone, incomingMessage, step, stock) {
   if (step === 'product') {
-    // Enhanced product matching - checks both name and SKU
     const selectedProduct = stock.find(item => 
       item.name.toLowerCase() === incomingMessage.toLowerCase() ||
       item.sku.toString() === incomingMessage.trim()
@@ -106,6 +105,7 @@ async function continueOrderFlow(phone, incomingMessage, step, stock) {
     
     setSession(phone, 'product', selectedProduct.name);
     setSession(phone, 'product_sku', selectedProduct.sku);
+    setSession(phone, 'product_price', selectedProduct.price);
     setSession(phone, 'step', 'quantity');
     await sendWhatsAppMessage(phone, 
       `How many units of ${selectedProduct.name} do you want? (Max ${selectedProduct.quantity})`);
@@ -113,7 +113,6 @@ async function continueOrderFlow(phone, incomingMessage, step, stock) {
   }
 
   if (step === 'quantity') {
-    // Validate quantity
     const quantity = parseInt(incomingMessage);
     const product = getSession(phone, 'product');
     const productStock = stock.find(item => item.name === product);
@@ -130,44 +129,103 @@ async function continueOrderFlow(phone, incomingMessage, step, stock) {
     }
     
     setSession(phone, 'quantity', quantity);
+    setSession(phone, 'step', 'name');
+    await sendWhatsAppMessage(phone, "What is your full name?");
+    return;
+  }
+
+  if (step === 'name') {
+    if (incomingMessage.trim().length < 3) {
+      await sendWhatsAppMessage(phone, "Please provide a valid name (at least 3 characters).");
+      return;
+    }
+    
+    setSession(phone, 'customer_name', incomingMessage);
+    setSession(phone, 'step', 'phone');
+    await sendWhatsAppMessage(phone, 
+      "What is your phone number? (We'll use this for delivery updates)");
+    return;
+  }
+
+  if (step === 'phone') {
+    // Basic phone number validation
+    const phoneRegex = /^[+]?[\d\s-]{8,}$/;
+    if (!phoneRegex.test(incomingMessage)) {
+      await sendWhatsAppMessage(phone, 
+        "Please provide a valid phone number (e.g., +1234567890 or 1234567890)");
+      return;
+    }
+    
+    setSession(phone, 'customer_phone', incomingMessage);
+    setSession(phone, 'customer_whatsapp', phone); // Using WhatsApp number from message
     setSession(phone, 'step', 'address');
     await sendWhatsAppMessage(phone, "What is your delivery address?");
     return;
   }
 
   if (step === 'address') {
-    // Validate address
     if (incomingMessage.trim().length < 10) {
       await sendWhatsAppMessage(phone, "Please provide a complete address (at least 10 characters).");
       return;
     }
     
     setSession(phone, 'address', incomingMessage);
+    setSession(phone, 'step', 'notes');
+    await sendWhatsAppMessage(phone, 
+      "Any special notes for your order? (Type 'none' if no special instructions)");
+    return;
+  }
+
+  if (step === 'notes') {
+    const notes = incomingMessage.toLowerCase() === 'none' ? '' : incomingMessage;
+    setSession(phone, 'notes', notes);
     setSession(phone, 'step', 'confirm');
     
-    const product = getSession(phone, 'product');
+    // Calculate total amount
+    const productPrice = getSession(phone, 'product_price');
     const quantity = getSession(phone, 'quantity');
+    const totalAmount = productPrice * quantity;
+    
+    const product = getSession(phone, 'product');
+    const customerName = getSession(phone, 'customer_name');
+    const address = getSession(phone, 'address');
     
     await sendWhatsAppMessage(phone,
-      `Please confirm your order:\n\n${quantity} x ${product}\nAddress: ${incomingMessage}\n\nReply "confirm" to proceed or "cancel" to abort.`);
+      `📝 *Order Summary*\n\n` +
+      `👤 Name: ${customerName}\n` +
+      `📱 Phone: ${getSession(phone, 'customer_phone')}\n` +
+      `📦 Product: ${quantity} x ${product}\n` +
+      `💰 Total: $${totalAmount.toFixed(2)}\n` +
+      `🏠 Address: ${address}\n` +
+      `📝 Notes: ${notes || 'None'}\n\n` +
+      `Reply "confirm" to place your order or "cancel" to abort.`);
     return;
   }
 
   if (step === 'confirm') {
     if (incomingMessage.toLowerCase() === 'confirm') {
-      const product = getSession(phone, 'product');
-      const sku = getSession(phone, 'product_sku');
-      const quantity = getSession(phone, 'quantity');
-      const address = getSession(phone, 'address');
-
       try {
-        await insertOrder(phone, `${product} (SKU: ${sku})`, quantity, address);
+        await insertOrder(
+          getSession(phone, 'customer_phone'),
+          phone, // WhatsApp number
+          getSession(phone, 'customer_name'),
+          getSession(phone, 'product'),
+          getSession(phone, 'quantity'),
+          getSession(phone, 'address'),
+          getSession(phone, 'notes'),
+          getSession(phone, 'product_price') * getSession(phone, 'quantity')
+        );
+        
         clearSession(phone);
         await sendWhatsAppMessage(phone, 
-          `✅ Order confirmed!\n\nProduct: ${quantity} x ${product}\nSKU: ${sku}\nAddress: ${address}\n\nThank you for your order!`);
+          `✅ *Order Confirmed!*\n\n` +
+          `Your order has been placed successfully.\n` +
+          `We'll contact you shortly with delivery details.\n\n` +
+          `Thank you for your purchase!`);
       } catch (error) {
         console.error('Order insertion error:', error);
-        await sendWhatsAppMessage(phone, "Failed to process your order. Please try again later.");
+        await sendWhatsAppMessage(phone, 
+          "❌ Failed to process your order. Please try again later or contact support.");
       }
     } else {
       clearSession(phone);
