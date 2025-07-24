@@ -19,7 +19,7 @@ async function getFaqAndStock() {
   return { faq, stock };
 }
 
-async function insertOrder(
+async function insertOrderWithItems(
   customer_phone,
   customer_whatsapp,
   customer_name,
