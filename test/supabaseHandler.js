@@ -23,48 +23,78 @@ async function insertOrder(
   customer_phone,
   customer_whatsapp,
   customer_name,
-  product,
+  productSku,
+  productName,
   quantity,
-  address,
-  notes = '',
-  total_amount = 0
+  unitPrice,
+  notes = ''
 ) {
   try {
-    // Generate a more unique order number
+    // Generate order number
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    
-    const orderData = {
-      order_number: orderNumber,
-      customer_name,
-      customer_phone,
-      customer_whatsapp,
-      product: `${product} (${quantity} units)`,
-      quantity: parseInt(quantity),
-      address,
-      notes,
-      total_amount: parseFloat(total_amount.toFixed(2)), // Ensure 2 decimal places
-      status: 'pending',
-      created_by: SERVICE_USER_ID // Using predefined service account
-    };
+    const totalAmount = unitPrice * quantity;
 
-    console.log('Inserting order:', orderData);
-
-    const { data, error } = await supabase
+    // 1. First insert the order
+    const { data: order, error: orderError } = await supabase
       .from('orders')
-      .insert([orderData])
+      .insert({
+        order_number: orderNumber,
+        customer_name,
+        customer_phone,
+        customer_whatsapp,
+        notes,
+        total_amount: totalAmount,
+        status: 'pending',
+        created_by: SERVICE_USER_ID
+      })
       .select()
       .single();
 
-    if (error) throw error;
-    return data;
+    if (orderError) throw orderError;
+
+    // 2. Get the stock item to get its ID
+    const { data: stockItem, error: stockError } = await supabase
+      .from('stock')
+      .select('id')
+      .eq('sku', productSku)
+      .single();
+
+    if (stockError) throw stockError;
+
+    // 3. Insert the order item
+    const { error: itemError } = await supabase
+      .from('order_items')
+      .insert({
+        order_id: order.id,
+        stock_id: stockItem.id,
+        quantity: quantity,
+        unit_price: unitPrice,
+        total_price: totalAmount
+      });
+
+    if (itemError) throw itemError;
+
+    // 4. Update stock quantity (optional)
+    await supabase
+      .from('stock')
+      .update({ quantity: supabase.rpc('decrement', { val: quantity }) })
+      .eq('sku', productSku);
+
+    return {
+      order_id: order.id,
+      order_number: orderNumber,
+      customer_name,
+      product_name: productName,
+      quantity,
+      total_amount: totalAmount
+    };
   } catch (error) {
-    console.error('Detailed Supabase error:', {
+    console.error('Order processing error:', {
       message: error.message,
       details: error.details,
-      hint: error.hint,
       code: error.code
     });
-    throw new Error(`Database insert failed: ${error.message}`);
+    throw new Error(`Failed to process order: ${error.message}`);
   }
 }
 
