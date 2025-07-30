@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getSession, setSession } from './sessionHandler.js';
+import { getFaqAndStock } from './supabaseHandler.js';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
