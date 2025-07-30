@@ -2,43 +2,106 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-async function classifyMessage(message) {
+async function detectLanguage(message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
-  const prompt = `Analyze the following message and classify it strictly as 'order' if it contains purchasing intent 
-  (words like 'order', 'buy', 'purchase', 'want to get', or equivalent in any language). Otherwise classify as 'faq'.
-  Respond with just 'order' or 'faq' in lowercase. Maintain the original language/style of this message in your analysis: ${message}`;
-
+  const prompt = `Detect the language of this message and respond ONLY with the ISO 639-1 language code (e.g., 'en', 'es', 'ar'): ${message}`;
+  
   try {
     const result = await model.generateContent(prompt);
-    const category = result.response.text().toLowerCase().trim();
-    return category.includes('order') ? 'order' : 'faq';
+    return result.response.text().trim().toLowerCase();
   } catch (err) {
-    console.error('Gemini classifyMessage error:', err);
-    return 'faq'; // fallback
+    console.error('Gemini detectLanguage error:', err);
+    return 'en'; // default to English
   }
 }
 
-async function getGeminiAnswer(question, faq, stock, profile) {
+async function getGeminiResponse(phone, message, context = {}) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const session = getSession(phone) || {};
+  const lang = session.lang || await detectLanguage(message);
+  
+  // Update language if not set
+  if (!session.lang) {
+    setSession(phone, 'lang', lang);
+  }
 
-  const prompt = `You are a helpful store assistant.
-FAQ: ${JSON.stringify(faq)}
-Stock: ${JSON.stringify(stock)}
+  // Get business data
+  const { faq, stock, business_profiles } = await getFaqAndStock();
+  const profile = business_profiles[0];
+
+  // Build context prompt
+  let prompt = `You are the customer service agent for ${profile.business_name}. 
+Respond in ${lang} using the same style as the customer. Be friendly, professional and helpful.
+
 Business Profile: ${JSON.stringify(profile)}
-Answer this customer question clearly: ${question}`;
+Available Stock: ${JSON.stringify(stock)}
+FAQ Knowledge: ${JSON.stringify(faq)}
+
+Current conversation context: ${JSON.stringify(context)}
+
+Customer Message: ${message}
+
+Provide a helpful response in ${lang} based on this information.`;
+
+  // Special handling for order flow steps
+  if (session.step) {
+    prompt += `\n\nNOTE: The customer is currently at step '${session.step}' in the ordering process. 
+Guide them appropriately through the flow.`;
+  }
 
   try {
     const result = await model.generateContent(prompt);
-    const answer = result.response.text().trim();
-    console.log('Gemini response:', answer);
-    return answer;
+    return result.response.text().trim();
   } catch (err) {
-    console.error('Gemini getGeminiAnswer error:', err);
-    return question.includes('؟') ? "آسف، حدث خطأ ما. الرجاء المحاولة لاحقاً" : 
-           /[ء-ي]/.test(question) ? "معذرة، لا يمكنني الإجابة الآن" :
-           "I'm sorry, I couldn't get an answer right now.";
+    console.error('Gemini response error:', err);
+    return lang === 'ar' ? "عذرًا، حدث خطأ. يرجى المحاولة لاحقًا" :
+           "Sorry, an error occurred. Please try again later.";
   }
 }
 
-module.exports = { classifyMessage, getGeminiAnswer };
+async function handleOrderStep(phone, message, step, stock, profile) {
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const session = getSession(phone);
+  const lang = session?.lang || 'en';
+
+  let prompt = `Generate the next message in ${lang} for the ordering process based on:
+Current Step: ${step}
+Customer Message: ${message}
+Session Data: ${JSON.stringify(session)}
+Available Stock: ${JSON.stringify(stock)}
+Business Profile: ${JSON.stringify(profile)}
+
+Provide ONLY the next message the assistant should send, guiding the customer through the order flow.`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = result.response.text().trim();
+    
+    // Update session based on step completion
+    if (step === 'product') {
+      const selectedProduct = stock.find(item => 
+        item.name.toLowerCase() === message.toLowerCase() ||
+        item.sku.toString().toLowerCase() === message.trim().toLowerCase()
+      );
+      
+      if (selectedProduct) {
+        setSession(phone, {
+          product: selectedProduct.name,
+          product_sku: selectedProduct.sku,
+          product_price: selectedPrice.price,
+          max_quantity: selectedProduct.quantity,
+          step: 'quantity'
+        });
+      }
+    }
+    // Add other step handling as needed...
+    
+    return response;
+  } catch (err) {
+    console.error('Gemini order step error:', err);
+    return lang === 'ar' ? "الرجاء إدخال المعلومات المطلوبة:" : 
+           "Please provide the required information:";
+  }
+}
+
+module.exports = { detectLanguage, getGeminiResponse, handleOrderStep };

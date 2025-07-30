@@ -1,9 +1,8 @@
-require('dotenv').config(); // <-- MUST be at the top
-
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const { sendWhatsAppMessage } = require('./whatsappHandler');
-const { classifyMessage, getGeminiAnswer } = require('./geminiHandler');
+const { getGeminiResponse, handleOrderStep } = require('./geminiHandler');
 const { getFaqAndStock, insertOrderWithItems } = require('./supabaseHandler');
 const { getSession, setSession, clearSession } = require('./sessionHandler');
 
@@ -32,26 +31,96 @@ app.post('/', async (req, res) => {
   try {
     const messageText = body.entry[0].changes[0].value.messages[0].text.body;
     const phone = body.entry[0].changes[0].value.messages[0].from;
+    const session = getSession(phone) || {};
 
-    // FIRST check if we're in an active order session
-    const currentStep = getSession(phone, 'step');
-    if (currentStep) {
-      await handleOrder(phone, messageText);
+    // Handle cancellation in any language
+    const cancelKeywords = {
+      en: ['cancel', 'stop', 'abort'],
+      ar: ['إلغاء', 'الغاء', 'إStop'],
+      es: ['cancelar', 'parar', 'detener'],
+      fr: ['annuler', 'arrêter']
+    };
+    
+    const isCancellation = Object.values(cancelKeywords).some(langKeywords => 
+      langKeywords.some(word => messageText.toLowerCase().includes(word.toLowerCase()))
+    );
+
+    if (isCancellation) {
+      clearSession(phone);
+      const response = await getGeminiResponse(phone, "The customer wants to cancel. Acknowledge the cancellation and ask how you can help.");
+      await sendWhatsAppMessage(phone, response);
       return res.status(200).json({ status: 'success' });
     }
 
-    // Only classify if not in an order flow
-    const classification = await classifyMessage(messageText);
+    // If in order flow, handle the step
+    if (session.step) {
+      const { stock, business_profiles } = await getFaqAndStock();
+      const profile = business_profiles[0];
+      
+      // Special handling for confirmation step
+      if (session.step === 'confirm') {
+        const confirmKeywords = {
+          en: ['confirm', 'yes', 'proceed'],
+          ar: ['تأكيد', 'نعم', 'متابعة'],
+          es: ['confirmar', 'sí', 'proceder'],
+          fr: ['confirmer', 'oui', 'continuer']
+        };
+        
+        const isConfirmation = Object.values(confirmKeywords).some(langKeywords => 
+          langKeywords.some(word => messageText.toLowerCase().includes(word.toLowerCase()))
+        );
 
-    if (classification === 'order') {
-      await handleOrder(phone, messageText);
-    } else if (classification === 'faq') {
-      const { faq, stock, business_profiles } = await getFaqAndStock();
-      const reply = await getGeminiAnswer(messageText, faq, stock, business_profiles);
-      await sendWhatsAppMessage(phone, reply);
-    } else {
-      await sendWhatsAppMessage(phone, "Sorry, I couldn't understand your request.");
+        if (isConfirmation) {
+          try {
+            const result = await insertOrderWithItems(
+              session.customer_phone || phone,
+              phone,
+              session.customer_name,
+              session.product_sku,
+              session.product,
+              session.quantity,
+              session.product_price,
+              session.address,
+              session.notes
+            );
+
+            clearSession(phone);
+            const response = await getGeminiResponse(phone, `The customer confirmed their order. Send a confirmation message with these details: 
+              Order #${result.order_number}, 
+              Product: ${result.product_name}, 
+              Quantity: ${result.quantity}, 
+              Total: ${result.total_amount}`);
+            await sendWhatsAppMessage(phone, response);
+          } catch (error) {
+            const response = await getGeminiResponse(phone, `The order failed with error: ${error.message}. Apologize and ask the customer to try again.`);
+            await sendWhatsAppMessage(phone, response);
+          }
+          return res.status(200).json({ status: 'success' });
+        } else {
+          clearSession(phone);
+          const response = await getGeminiResponse(phone, "The customer didn't confirm the order. Acknowledge the cancellation.");
+          await sendWhatsAppMessage(phone, response);
+          return res.status(200).json({ status: 'success' });
+        }
+      }
+
+      // Handle other order steps
+      const response = await handleOrderStep(phone, messageText, session.step, stock, profile);
+      await sendWhatsAppMessage(phone, response);
+      return res.status(200).json({ status: 'success' });
     }
+
+    // For new messages, let Gemini handle everything
+    const { faq, stock, business_profiles } = await getFaqAndStock();
+    const context = {
+      faq,
+      stock,
+      business_profile: business_profiles[0],
+      is_new_conversation: !session.lang
+    };
+
+    const response = await getGeminiResponse(phone, messageText, context);
+    await sendWhatsAppMessage(phone, response);
 
     res.status(200).json({ status: 'success' });
   } catch (err) {
@@ -59,196 +128,6 @@ app.post('/', async (req, res) => {
     res.status(400).send('No valid message received');
   }
 });
-
-async function handleOrder(phone, incomingMessage) {
-  console.log(`Handling order for ${phone}, message: ${incomingMessage}`); // Debug log
-  const step = getSession(phone, 'step');
-  console.log(`Current step for ${phone}: ${step}`); // Debug log
-  const { stock } = await getFaqAndStock();
-
-  // Handle cancellation at any point
-  if (incomingMessage.toLowerCase() === 'cancel') {
-    clearSession(phone);
-    await sendWhatsAppMessage(phone, "Order cancelled. How can I help you?");
-    return;
-  }
-  if (step) {
-    console.log(`Continuing order flow for ${phone} at step ${step}`); // Debug log
-    await continueOrderFlow(phone, incomingMessage, step, stock);
-    return;
-  }
-
-  // Check if we're already in an order flow
-  if (step && step !== 'product') {
-    // Continue with existing order flow
-    await continueOrderFlow(phone, incomingMessage, step, stock);
-    return;
-  }
-
-  // Start new order flow
-  const availableProducts = stock.map(item => `- ${item.name} (SKU: ${item.sku}, ${item.quantity} available)`).join('\n');
-  setSession(phone, 'step', 'product');
-  await sendWhatsAppMessage(phone, 
-    `What product do you want to order? Available products:\n${availableProducts}\n\nType "cancel" to stop.`);
-}
-
-async function continueOrderFlow(phone, incomingMessage, step, stock) {
-  if (step === 'product') {
-    const selectedProduct = stock.find(item => 
-      item.name.toLowerCase() === incomingMessage.toLowerCase() ||
-      item.sku.toString() === incomingMessage.trim()
-    );
-    
-    if (!selectedProduct) {
-      await sendWhatsAppMessage(phone, 
-        "This product isn't available. Please choose from the list or type 'cancel'.");
-      return;
-    }
-    
-    setSession(phone, 'product', selectedProduct.name);
-    setSession(phone, 'product_sku', selectedProduct.sku);
-    setSession(phone, 'product_price', selectedProduct.price);
-    setSession(phone, 'step', 'quantity');
-    await sendWhatsAppMessage(phone, 
-      `How many units of ${selectedProduct.name} do you want? (Max ${selectedProduct.quantity})`);
-    return;
-  }
-
-  if (step === 'quantity') {
-    const quantity = parseInt(incomingMessage);
-    const product = getSession(phone, 'product');
-    const productStock = stock.find(item => item.name === product);
-    
-    if (isNaN(quantity) || quantity <= 0) {
-      await sendWhatsAppMessage(phone, "Please enter a valid number greater than 0.");
-      return;
-    }
-    
-    if (quantity > productStock.quantity) {
-      await sendWhatsAppMessage(phone, 
-        `We only have ${productStock.quantity} available. Please enter a smaller quantity.`);
-      return;
-    }
-    
-    setSession(phone, 'quantity', quantity);
-    setSession(phone, 'step', 'name');
-    await sendWhatsAppMessage(phone, "What is your full name?");
-    return;
-  }
-
-  if (step === 'name') {
-    if (incomingMessage.trim().length < 3) {
-      await sendWhatsAppMessage(phone, "Please provide a valid name (at least 3 characters).");
-      return;
-    }
-    
-    setSession(phone, 'customer_name', incomingMessage);
-    setSession(phone, 'step', 'phone');
-    await sendWhatsAppMessage(phone, 
-      "What is your phone number? (We'll use this for delivery updates)");
-    return;
-  }
-
-  if (step === 'phone') {
-    // Basic phone number validation
-    const phoneRegex = /^[+]?[\d\s-]{8,}$/;
-    if (!phoneRegex.test(incomingMessage)) {
-      await sendWhatsAppMessage(phone, 
-        "Please provide a valid phone number (e.g., +1234567890 or 1234567890)");
-      return;
-    }
-    
-    setSession(phone, 'customer_phone', incomingMessage);
-    setSession(phone, 'customer_whatsapp', phone); // Using WhatsApp number from message
-    setSession(phone, 'step', 'address');
-    await sendWhatsAppMessage(phone, "What is your delivery address?");
-    return;
-  }
-
-  if (step === 'address') {
-    if (incomingMessage.trim().length < 10) {
-      await sendWhatsAppMessage(phone, "Please provide a complete address (at least 10 characters).");
-      return;
-    }
-    
-    setSession(phone, 'address', incomingMessage);
-    setSession(phone, 'step', 'notes');
-    await sendWhatsAppMessage(phone, 
-      "Any special notes for your order? (Type 'none' if no special instructions)");
-    return;
-  }
-
-  if (step === 'notes') {
-    const notes = incomingMessage.toLowerCase() === 'none' ? '' : incomingMessage;
-    setSession(phone, 'notes', notes);
-    setSession(phone, 'step', 'confirm');
-    
-    // Calculate total amount
-    const productPrice = getSession(phone, 'product_price');
-    const quantity = getSession(phone, 'quantity');
-    const totalAmount = productPrice * quantity;
-    
-    const product = getSession(phone, 'product');
-    const customerName = getSession(phone, 'customer_name');
-    const address = getSession(phone, 'address');
-    
-    await sendWhatsAppMessage(phone,
-      `📝 *Order Summary*\n\n` +
-      `👤 Name: ${customerName}\n` +
-      `📱 Phone: ${getSession(phone, 'customer_phone')}\n` +
-      `📦 Product: ${quantity} x ${product}\n` +
-      `💰 Total: $${totalAmount.toFixed(2)}\n` +
-      `🏠 Address: ${address}\n` +
-      `📝 Notes: ${notes || 'None'}\n\n` +
-      `Reply "confirm" to place your order or "cancel" to abort.`);
-    return;
-  }
-
-  if (step === 'confirm') {
-    if (incomingMessage.toLowerCase() === 'confirm') {
-      try {
-        const productSku = getSession(phone, 'product_sku');
-        const productName = getSession(phone, 'product');
-        const quantity = getSession(phone, 'quantity');
-        const productPrice = getSession(phone, 'product_price');
-        
-        const result = await insertOrderWithItems(
-          getSession(phone, 'customer_phone'),
-          phone,
-          getSession(phone, 'customer_name'),
-          productSku,
-          productName,
-          quantity,
-          productPrice,
-          getSession(phone, 'notes')
-        );
-
-        clearSession(phone);
-        await sendWhatsAppMessage(phone,
-          `✅ *Order Confirmed!*\n\n` +
-          `Order #: ${result.order_number}\n` +
-          `Product: ${result.product_name}\n` +
-          `Quantity: ${result.quantity}\n` +
-          `Total: $${result.total_amount.toFixed(2)}\n\n` +
-          `We'll contact you shortly.`);
-      } catch (error) {
-        console.error('Order failed:', error);
-        await sendWhatsAppMessage(phone,
-          `❌ Order Failed\n\n` +
-          `Error: ${error.message}\n` +
-          `Please try again or contact support.`);
-      }
-    } else {
-      clearSession(phone);
-      await sendWhatsAppMessage(phone, "Order cancelled.");
-    }
-    return;
-  }
-
-  // Fallback for unexpected states
-  clearSession(phone);
-  await sendWhatsAppMessage(phone, "Let's start over. How can I help you?");
-}
 
 app.listen(port, () => {
   console.log(`\nListening on port ${port}\n`);
