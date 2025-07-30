@@ -89,7 +89,7 @@ Provide ONLY the next message the assistant should send, guiding the customer th
         setSession(phone, {
           product: selectedProduct.name,
           product_sku: selectedProduct.sku,
-          product_price: selectedPrice.price,
+          product_price: selectedProduct.price,
           max_quantity: selectedProduct.quantity,
           step: 'quantity'
         });
@@ -105,4 +105,4 @@ Provide ONLY the next message the assistant should send, guiding the customer th
   }
 }
 
-module.exports = { detectLanguage, getGeminiResponse, handleOrderStep };
+export { detectLanguage, getGeminiResponse, handleOrderStep };
