@@ -19,12 +19,13 @@ async function detectLanguage(message) {
 
 async function getGeminiResponse(phone, message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  const session = getSession(phone) || {};
+  let session = getSession(phone) || {};
   const lang = session.lang || await detectLanguage(message);
   
   // Update language if not set
   if (!session.lang) {
-    setSession(phone, 'lang', lang);
+    session.lang = lang;
+    setSession(phone, session);
   }
 
   // Get business data
@@ -56,9 +57,10 @@ Provide a helpful response in ${lang} based on this information.`;
     const result = await model.generateContent(prompt);
     const response = result.response.text().trim();
     
-    // Update conversation history
+    // Update conversation history and session
     conversationHistory.push({ role: 'assistant', content: response });
-    setSession(phone, 'conversation', conversationHistory.slice(-10)); // Keep last 10 messages
+    session.conversation = conversationHistory.slice(-10); // Keep last 10 messages
+    setSession(phone, session);
     
     return response;
   } catch (err) {
@@ -69,7 +71,7 @@ Provide a helpful response in ${lang} based on this information.`;
 }
 
 async function handleOrderFlow(phone, message) {
-  const session = getSession(phone) || {};
+  let session = getSession(phone) || {};
   const { stock, business_profiles } = await getFaqAndStock();
   const profile = business_profiles[0];
   const lang = session.lang || 'en';
@@ -83,35 +85,48 @@ async function handleOrderFlow(phone, message) {
 
   // Initialize order flow if not started
   if (!session.step) {
-    setSession(phone, { 
+    session = {
       step: 'product',
+      lang: lang,
       conversation: [{ role: 'customer', content: message }]
-    });
+    };
+    setSession(phone, session);
     return generateOrderQuestion(phone, 'product', stock, profile);
   }
 
   // Process current step
+  let response;
   switch (session.step) {
     case 'product':
-      return handleProductSelection(phone, message, stock, profile);
+      response = await handleProductSelection(phone, message, stock, profile);
+      break;
     case 'quantity':
-      return handleQuantitySelection(phone, message, stock, profile);
+      response = await handleQuantitySelection(phone, message, stock, profile);
+      break;
     case 'name':
-      return handleNameCollection(phone, message);
+      response = await handleNameCollection(phone, message);
+      break;
     case 'phone':
-      return handlePhoneCollection(phone, message);
+      response = await handlePhoneCollection(phone, message);
+      break;
     case 'address':
-      return handleAddressCollection(phone, message);
+      response = await handleAddressCollection(phone, message);
+      break;
     case 'notes':
-      return handleNotesCollection(phone, message);
+      response = await handleNotesCollection(phone, message);
+      break;
     case 'confirm':
-      return handleOrderConfirmation(phone, message);
+      response = await handleOrderConfirmation(phone, message);
+      break;
     default:
       clearSession(phone);
       return lang === 'ar' ? "لنبدأ من جديد. كيف يمكنني مساعدتك؟" :
              "Let's start over. How can I help you?";
   }
+
+  return response;
 }
+
 
 async function generateOrderQuestion(phone, step, stock, profile) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });

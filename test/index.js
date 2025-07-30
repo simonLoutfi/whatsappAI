@@ -2,8 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const { sendWhatsAppMessage } = require('./whatsappHandler');
-const { getGeminiResponse, handleOrderStep } = require('./geminiHandler');
-const { getFaqAndStock, insertOrderWithItems } = require('./supabaseHandler');
+const { getGeminiResponse, handleOrderFlow } = require('./geminiHandler');
 const { getSession, setSession, clearSession } = require('./sessionHandler');
 
 const app = express();
@@ -52,77 +51,14 @@ app.post('/', async (req, res) => {
       return res.status(200).json({ status: 'success' });
     }
 
-    // If in order flow, handle the step
-    if (session.step) {
-      const { stock, business_profiles } = await getFaqAndStock();
-      const profile = business_profiles[0];
-      
-      // Special handling for confirmation step
-      if (session.step === 'confirm') {
-        const confirmKeywords = {
-          en: ['confirm', 'yes', 'proceed'],
-          ar: ['تأكيد', 'نعم', 'متابعة'],
-          es: ['confirmar', 'sí', 'proceder'],
-          fr: ['confirmer', 'oui', 'continuer']
-        };
-        
-        const isConfirmation = Object.values(confirmKeywords).some(langKeywords => 
-          langKeywords.some(word => messageText.toLowerCase().includes(word.toLowerCase()))
-        );
+    // Check if we're in an order flow
+    const response = session.step 
+      ? await handleOrderFlow(phone, messageText)
+      : await getGeminiResponse(phone, messageText);
 
-        if (isConfirmation) {
-          try {
-            const result = await insertOrderWithItems(
-              session.customer_phone || phone,
-              phone,
-              session.customer_name,
-              session.product_sku,
-              session.product,
-              session.quantity,
-              session.product_price,
-              session.address,
-              session.notes
-            );
-
-            clearSession(phone);
-            const response = await getGeminiResponse(phone, `The customer confirmed their order. Send a confirmation message with these details: 
-              Order #${result.order_number}, 
-              Product: ${result.product_name}, 
-              Quantity: ${result.quantity}, 
-              Total: ${result.total_amount}`);
-            await sendWhatsAppMessage(phone, response);
-          } catch (error) {
-            const response = await getGeminiResponse(phone, `The order failed with error: ${error.message}. Apologize and ask the customer to try again.`);
-            await sendWhatsAppMessage(phone, response);
-          }
-          return res.status(200).json({ status: 'success' });
-        } else {
-          clearSession(phone);
-          const response = await getGeminiResponse(phone, "The customer didn't confirm the order. Acknowledge the cancellation.");
-          await sendWhatsAppMessage(phone, response);
-          return res.status(200).json({ status: 'success' });
-        }
-      }
-
-      // Handle other order steps
-      const response = await handleOrderStep(phone, messageText, session.step, stock, profile);
-      await sendWhatsAppMessage(phone, response);
-      return res.status(200).json({ status: 'success' });
-    }
-
-    // For new messages, let Gemini handle everything
-    const { faq, stock, business_profiles } = await getFaqAndStock();
-    const context = {
-      faq,
-      stock,
-      business_profile: business_profiles[0],
-      is_new_conversation: !session.lang
-    };
-
-    const response = await getGeminiResponse(phone, messageText, context);
     await sendWhatsAppMessage(phone, response);
+    return res.status(200).json({ status: 'success' });
 
-    res.status(200).json({ status: 'success' });
   } catch (err) {
     console.error('Error handling webhook:', err);
     res.status(400).send('No valid message received');
