@@ -1,4 +1,5 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+import { getSession, setSession } from './sessionHandler';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
