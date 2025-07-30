@@ -1,3 +1,5 @@
+require('dotenv').config(); // <-- MUST be at the top
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const { sendWhatsAppMessage } = require('./whatsappHandler');
@@ -7,7 +9,7 @@ const { getSession, setSession, clearSession } = require('./sessionHandler');
 
 const app = express();
 const port = process.env.PORT || 5000;
-const VERIFY_TOKEN = 'whatsapp_secret_23c8f1a7';
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN; 
 
 app.use(bodyParser.json());
 
@@ -44,8 +46,8 @@ app.post('/', async (req, res) => {
     if (classification === 'order') {
       await handleOrder(phone, messageText);
     } else if (classification === 'faq') {
-      const { faq, stock } = await getFaqAndStock();
-      const reply = await getGeminiAnswer(messageText, faq, stock);
+      const { faq, stock, business_profiles } = await getFaqAndStock();
+      const reply = await getGeminiAnswer(messageText, faq, stock, business_profiles);
       await sendWhatsAppMessage(phone, reply);
     } else {
       await sendWhatsAppMessage(phone, "Sorry, I couldn't understand your request.");

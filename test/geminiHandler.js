@@ -1,12 +1,13 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const apiKey = 'AIzaSyAgXyRgMu-SCbHiBidZWwfJE4ZHQpvR-as';
-const genAI = new GoogleGenerativeAI(apiKey);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function classifyMessage(message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-  const prompt = `Classify this message strictly as 'order' if it contains words like 'order', 'buy', 'purchase', 'want to get', or similar purchasing intent. Otherwise classify as 'faq': ${message}`;
+  const prompt = `Analyze the following message and classify it strictly as 'order' if it contains purchasing intent 
+  (words like 'order', 'buy', 'purchase', 'want to get', or equivalent in any language). Otherwise classify as 'faq'.
+  Respond with just 'order' or 'faq' in lowercase. Maintain the original language/style of this message in your analysis: ${message}`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -18,10 +19,14 @@ async function classifyMessage(message) {
   }
 }
 
-async function getGeminiAnswer(question, faq, stock) {
+async function getGeminiAnswer(question, faq, stock, profile) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-  const prompt = `You are a helpful store assistant.\nFAQ: ${JSON.stringify(faq)}\nStock: ${JSON.stringify(stock)}\nAnswer this customer question clearly: ${question}`;
+  const prompt = `You are a helpful store assistant.
+FAQ: ${JSON.stringify(faq)}
+Stock: ${JSON.stringify(stock)}
+Business Profile: ${JSON.stringify(profile)}
+Answer this customer question clearly: ${question}`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -30,7 +35,9 @@ async function getGeminiAnswer(question, faq, stock) {
     return answer;
   } catch (err) {
     console.error('Gemini getGeminiAnswer error:', err);
-    return "I'm sorry, I couldn't get an answer right now.";
+    return question.includes('؟') ? "آسف، حدث خطأ ما. الرجاء المحاولة لاحقاً" : 
+           /[ء-ي]/.test(question) ? "معذرة، لا يمكنني الإجابة الآن" :
+           "I'm sorry, I couldn't get an answer right now.";
   }
 }
 

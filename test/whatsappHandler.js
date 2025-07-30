@@ -1,7 +1,7 @@
 const axios = require('axios');
 
-const TOKEN = 'EAAULrxtQZB0oBPKKpVtAEtqjm1Ukug4kqwxgb53A18o5aaDgBaXvfDO3IZCPPV0aEvBg1Hr7qEFHeX3urVE1HjzZBI7rUIT4Wf2bmmB5LHnqZANUNduWiOtQn6ZBqbZBIlIBQZBPjFQXCeGRMoC1WYIyZAnATFGv1XlPeafV9gCsvL9TQiOPRDcZBNNJZAfI6NagxKSB3IBhiHVGIDSZBicxcNnNZCnSOKuUuuzMG6vBPnZCwTwrZARWMZD';
-const PHONE_NUMBER_ID = '658554300685107';
+const TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 async function sendWhatsAppMessage(to, message) {
   const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;

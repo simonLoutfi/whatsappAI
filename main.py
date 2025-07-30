@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from whatsapp_handler import send_whatsapp_message
 from gemini_handler import classify_message, get_gemini_answer
-from supabase_handler import get_faq_and_stock, insert_order
+from supabase_handler import get_faq_stock_and_profile, insert_order
 from sessions import set_session, get_session, clear_session
 
 app = Flask(__name__)
@@ -32,8 +32,8 @@ def webhook():
     if classification == 'order':
         handle_order(phone_number, message_text)
     elif classification == 'faq':
-        faq, stock = get_faq_and_stock()
-        reply = get_gemini_answer(message_text, faq, stock)
+        faq, stock, profile = get_faq_stock_and_profile()
+        reply = get_gemini_answer(message_text, faq, stock, profile)
         send_whatsapp_message(phone_number, reply)
     else:
         send_whatsapp_message(phone_number, "Sorry, I couldn't understand your request.")

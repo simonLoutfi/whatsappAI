@@ -4,19 +4,17 @@ const url = 'https://qvijckgxoauxeyoowcsn.supabase.co';
 const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF2aWpja2d4b2F1eGV5b293Y3NuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1Mjc0MjUxOSwiZXhwIjoyMDY4MzE4NTE5fQ.iVbqPo0-YdzSwyPD0ZNfCUqbM31lm9tlH-9IihePo98'; 
 const supabase = createClient(url, key);
 
-// Service account user ID (create a dedicated service user in your Supabase auth)
-const SERVICE_USER_ID = 'd1a2b3c4-1234-5678-9012-345678901234'; 
-
 async function getFaqAndStock() {
   const { data: faq, error: faqError } = await supabase.from('faqs').select('*');
   const { data: stock, error: stockError } = await supabase.from('stock').select('*');
+  const { data: business_profiles, error: businessProfilesError } = await supabase.from('business_profiles').select('*');
 
-  if (faqError || stockError) {
-    console.error('Error fetching FAQ or stock:', faqError || stockError);
-    return { faq: [], stock: [] };
+  if (faqError || stockError || businessProfilesError) {
+    console.error('Error fetching FAQ, stock, or business profiles:', faqError || stockError || businessProfilesError);
+    return { faq: [], stock: [], business_profiles: [] };
   }
 
-  return { faq, stock };
+  return { faq, stock, business_profiles };
 }
 
 async function insertOrderWithItems(
