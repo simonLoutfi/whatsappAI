@@ -28,8 +28,6 @@ Message: "${message}"`;
   }
 }
 
-// ... (previous imports remain the same)
-
 async function getGeminiResponse(phone, message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   let session = getSession(phone) || {};
@@ -49,41 +47,28 @@ async function getGeminiResponse(phone, message) {
   const conversationHistory = session.conversation || [];
   conversationHistory.push({ role: 'customer', content: message });
   
-  // Check if this is a general question during an order flow
-  if (session.step && !isOrderRelated(message, lang)) {
-    console.log(`General question during order flow from ${phone}`);
-    return await handleGeneralQuestionDuringOrder(phone, message, session, model, faq, stock, profile);
-  }
+  // Check if customer wants to make an order
+  const orderKeywords = [
+    // English
+    'order', 'buy', 'purchase', 'want', 'need', 'get',
+    // Arabic script
+    'طلب', 'شراء', 'أريد', 'بدي', 'عاوز',
+    // Arabizi/Franco-Arabic
+    'baddi', 'biddi', 'ba2a', 'bade', '3ayz', '3ayez', 'awez',
+    // French
+    'commander', 'acheter', 'veux', 'voudrais'
+  ];
+  
+  const isOrderIntent = orderKeywords.some(keyword => 
+    message.toLowerCase().includes(keyword.toLowerCase())
+  );
 
-  // Check if customer wants to make an order (only if not already in order flow)
-  if (!session.step) {
-    const orderKeywords = [
-      // English
-      'order', 'buy', 'purchase', 'want', 'need', 'get',
-      // Arabic script
-      'طلب', 'شراء', 'أريد', 'بدي', 'عاوز',
-      // Arabizi/Franco-Arabic
-      'baddi', 'biddi', 'ba2a', 'bade', '3ayz', '3ayez', 'awez',
-      // French
-      'commander', 'acheter', 'veux', 'voudrais'
-    ];
-    
-    const isOrderIntent = orderKeywords.some(keyword => 
-      message.toLowerCase().includes(keyword.toLowerCase())
-    );
-
-    // If order intent detected, start order flow
-    if (isOrderIntent) {
-      console.log(`Order intent detected for ${phone}: ${message}`);
-      return await initializeOrderFlow(phone, message, stock, profile, lang);
-    }
+  // If order intent detected, start order flow
+  if (isOrderIntent && !session.step) {
+    console.log(`Order intent detected for ${phone}: ${message}`);
+    return await initializeOrderFlow(phone, message, stock, profile, lang);
   }
   
-  // If we're in an order flow, handle it
-  if (session.step) {
-    return await handleOrderFlow(phone, message);
-  }
-
   // Build context prompt for general conversation
   let prompt = `You are a friendly customer service agent. 
 Respond in the SAME language/style as the customer's message. If they use:
@@ -104,6 +89,8 @@ ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 
 Customer Message: ${message}
 
+If the customer wants to order something, tell them you'll help them place an order and ask them to specify which product they want from the available stock.
+
 Provide a helpful, natural response matching their language style.`;
 
   try {
@@ -122,148 +109,6 @@ Provide a helpful, natural response matching their language style.`;
            "Sorry, an error occurred. Please try again later.";
   }
 }
-
-// New helper function to detect if message is order-related
-function isOrderRelated(message, lang) {
-  const orderFlowKeywords = [
-    // English
-    'yes', 'no', 'cancel', 'product', 'quantity', 'amount', 'name', 
-    'phone', 'number', 'address', 'location', 'note', 'confirm',
-    // Arabic
-    'نعم', 'لا', 'إلغاء', 'منتج', 'كمية', 'اسم', 'هاتف', 'عنوان', 'ملاحظة', 'تأكيد',
-    // French
-    'oui', 'non', 'annuler', 'produit', 'quantité', 'nom', 'téléphone', 'adresse', 'note', 'confirmer'
-  ];
-  
-  return orderFlowKeywords.some(keyword => 
-    message.toLowerCase().includes(keyword.toLowerCase())
-  );
-}
-
-// New function to handle general questions during order flow
-async function handleGeneralQuestionDuringOrder(phone, message, session, model, faq, stock, profile) {
-  const lang = session.lang || 'en';
-  const conversationHistory = session.conversation || [];
-  
-  // Build context that includes both order context and general knowledge
-  let prompt = `You're helping a customer with an order, but they asked a general question. 
-First answer their question naturally, then gently guide back to the order process.
-
-Current Order Step: ${session.step}
-${session.step === 'product' ? '' : `Selected Product: ${session.product}`}
-${session.step === 'quantity' ? `Requested Quantity: ${message}` : ''}
-
-Business Profile: ${JSON.stringify(profile)}
-Available Stock: ${JSON.stringify(stock)}
-FAQ Knowledge: ${JSON.stringify(faq)}
-
-Conversation History:
-${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
-
-Customer Message: ${message}
-
-Respond naturally to their question in their language style (${lang}), then add a brief reminder about the order.`;
-
-  try {
-    const result = await model.generateContent(prompt);
-    const response = result.response.text().trim();
-    
-    // Update conversation history but don't change order flow state
-    conversationHistory.push({ role: 'assistant', content: response });
-    session.conversation = conversationHistory.slice(-10);
-    setSession(phone, session);
-    
-    return response;
-  } catch (err) {
-    console.error('General question during order error:', err);
-    // Fall back to standard order flow message
-    return generateOrderQuestion(phone, session.step, stock, profile);
-  }
-}
-
-// ... (rest of the file remains the same)
-
-// async function getGeminiResponse(phone, message) {
-//   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-//   let session = getSession(phone) || {};
-//   const lang = session.lang || await detectLanguage(message);
-  
-//   // Update language if not set
-//   if (!session.lang) {
-//     session.lang = lang;
-//     setSession(phone, session);
-//   }
-
-//   // Get business data
-//   const { faq, stock, business_profiles } = await getFaqAndStock();
-//   const profile = business_profiles[0];
-
-//   // Build conversation history
-//   const conversationHistory = session.conversation || [];
-//   conversationHistory.push({ role: 'customer', content: message });
-  
-//   // Check if customer wants to make an order
-//   const orderKeywords = [
-//     // English
-//     'order', 'buy', 'purchase', 'want', 'need', 'get',
-//     // Arabic script
-//     'طلب', 'شراء', 'أريد', 'بدي', 'عاوز',
-//     // Arabizi/Franco-Arabic
-//     'baddi', 'biddi', 'ba2a', 'bade', '3ayz', '3ayez', 'awez',
-//     // French
-//     'commander', 'acheter', 'veux', 'voudrais'
-//   ];
-  
-//   const isOrderIntent = orderKeywords.some(keyword => 
-//     message.toLowerCase().includes(keyword.toLowerCase())
-//   );
-
-//   // If order intent detected, start order flow
-//   if (isOrderIntent && !session.step) {
-//     console.log(`Order intent detected for ${phone}: ${message}`);
-//     return await initializeOrderFlow(phone, message, stock, profile, lang);
-//   }
-  
-//   // Build context prompt for general conversation
-//   let prompt = `You are a friendly customer service agent. 
-// Respond in the SAME language/style as the customer's message. If they use:
-// - English: respond in English
-// - Arabic script: respond in Arabic script
-// - Arabizi/Franco-Arabic (Arabic in English letters like "kifak", "chou", "3endak"): respond in the same Arabizi style
-// - French: respond in French  
-// - Mixed languages: match their style and mix
-
-// IMPORTANT: Be natural and conversational. DO NOT include phrases like "Here's a question you can use" or similar instructional text.
-
-// Business Profile: ${JSON.stringify(profile)}
-// Available Stock: ${JSON.stringify(stock)}
-// FAQ Knowledge: ${JSON.stringify(faq)}
-
-// Conversation History:
-// ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
-
-// Customer Message: ${message}
-
-// If the customer wants to order something, tell them you'll help them place an order and ask them to specify which product they want from the available stock.
-
-// Provide a helpful, natural response matching their language style.`;
-
-//   try {
-//     const result = await model.generateContent(prompt);
-//     const response = result.response.text().trim();
-    
-//     // Update conversation history and session
-//     conversationHistory.push({ role: 'assistant', content: response });
-//     session.conversation = conversationHistory.slice(-10);
-//     setSession(phone, session);
-    
-//     return response;
-//   } catch (err) {
-//     console.error('Gemini response error:', err);
-//     return lang === 'ar' ? "عذرًا، حدث خطأ. يرجى المحاولة لاحقًا" :
-//            "Sorry, an error occurred. Please try again later.";
-//   }
-// }
 
 async function initializeOrderFlow(phone, message, stock, profile, lang) {
   console.log(`Initializing order flow for ${phone}`);
