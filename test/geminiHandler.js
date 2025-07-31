@@ -328,7 +328,17 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
 
   if (isConfirmed) {
     try {
-      // Insert order into database
+      console.log('Attempting to insert order with:', {
+        customer_phone: session.customer_phone,
+        customer_whatsapp: phone,
+        customer_name: session.customer_name,
+        productSku: session.product_sku,
+        productName: session.product,
+        quantity: session.quantity,
+        unitPrice: session.product_price,
+        notes: session.address // Using address as notes
+      });
+
       const result = await insertOrderWithItems(
         session.customer_phone,
         phone,
@@ -337,22 +347,24 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
         session.product,
         session.quantity,
         session.product_price,
-        session.address // Added address to notes
+        session.address // Delivery address as notes
       );
 
+      console.log('Order inserted successfully:', result);
+      
       clearSession(phone);
       
-      // Simple confirmation message in English
       return `✅ Order Confirmed!\n\n` +
              `Order #: ${result.order_number}\n` +
-             `Product: ${result.product_name}\n` +
-             `Quantity: ${result.quantity}\n` +
-             `Total: $${result.total_amount}\n` +
+             `Product: ${session.product}\n` +
+             `Quantity: ${session.quantity}\n` +
+             `Total: $${session.product_price * session.quantity}\n` +
              `Delivery to: ${session.address}\n\n` +
              `Thank you for your order!`;
     } catch (error) {
+      console.error('Order insertion failed:', error);
       clearSession(phone);
-      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again`;
+      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again or contact support`;
     }
   } else {
     clearSession(phone);
