@@ -6,11 +6,22 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 async function detectLanguage(message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  const prompt = `Detect the language of this message and respond ONLY with the ISO 639-1 language code (e.g., 'en', 'es', 'ar'): ${message}`;
+  const prompt = `Detect the language of this message. Consider:
+- English: standard English
+- Arabic: Arabic script (العربية)
+- Arabizi/Franco-Arabic: Arabic written in Latin script (like "kifak", "chou", "3endak")
+- French: French language
+- Mixed: if multiple languages are used
+
+Respond ONLY with one of: en, ar, arabizi, fr, mixed
+
+Message: "${message}"`;
   
   try {
     const result = await model.generateContent(prompt);
-    return result.response.text().trim().toLowerCase();
+    const detected = result.response.text().trim().toLowerCase();
+    console.log(`Language detected for "${message}": ${detected}`);
+    return detected;
   } catch (err) {
     console.error('Gemini detectLanguage error:', err);
     return 'en';
@@ -37,7 +48,17 @@ async function getGeminiResponse(phone, message) {
   conversationHistory.push({ role: 'customer', content: message });
   
   // Check if customer wants to make an order
-  const orderKeywords = ['order', 'buy', 'purchase', 'want', 'need', 'get'];
+  const orderKeywords = [
+    // English
+    'order', 'buy', 'purchase', 'want', 'need', 'get',
+    // Arabic script
+    'طلب', 'شراء', 'أريد', 'بدي', 'عاوز',
+    // Arabizi/Franco-Arabic
+    'baddi', 'biddi', 'ba2a', 'bade', '3ayz', '3ayez', 'awez',
+    // French
+    'commander', 'acheter', 'veux', 'voudrais'
+  ];
+  
   const isOrderIntent = orderKeywords.some(keyword => 
     message.toLowerCase().includes(keyword.toLowerCase())
   );
@@ -49,8 +70,15 @@ async function getGeminiResponse(phone, message) {
   }
   
   // Build context prompt for general conversation
-  let prompt = `You are the customer service agent for ${profile.business_name}. 
-Respond in ${lang} using the same style as the customer. Be friendly, professional and helpful.
+  let prompt = `You are a friendly customer service agent. 
+Respond in the SAME language/style as the customer's message. If they use:
+- English: respond in English
+- Arabic script: respond in Arabic script
+- Arabizi/Franco-Arabic (Arabic in English letters like "kifak", "chou", "3endak"): respond in the same Arabizi style
+- French: respond in French  
+- Mixed languages: match their style and mix
+
+IMPORTANT: Be natural and conversational. DO NOT include phrases like "Here's a question you can use" or similar instructional text.
 
 Business Profile: ${JSON.stringify(profile)}
 Available Stock: ${JSON.stringify(stock)}
@@ -59,13 +87,11 @@ FAQ Knowledge: ${JSON.stringify(faq)}
 Conversation History:
 ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 
-Current Session State: ${JSON.stringify(session)}
-
 Customer Message: ${message}
 
 If the customer wants to order something, tell them you'll help them place an order and ask them to specify which product they want from the available stock.
 
-Provide a helpful response in ${lang} based on this information.`;
+Provide a helpful, natural response matching their language style.`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -110,6 +136,8 @@ async function handleOrderFlow(phone, message) {
   if (isCancellation(message, lang)) {
     clearSession(phone);
     return lang === 'ar' ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" : 
+           lang === 'arabizi' ? "Tamma ilgha2 el talab. Kif fi sa3dik?" :
+           lang === 'fr' ? "Commande annulée. Comment puis-je vous aider ?" :
            "Order cancelled. How can I help you?";
   }
 
@@ -156,45 +184,64 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
   if (customPrompt) {
     prompt = customPrompt;
   } else {
+    // Language instructions based on detected language
+    let langInstruction = '';
+    switch (lang) {
+      case 'ar':
+        langInstruction = 'Respond in Arabic script (العربية)';
+        break;
+      case 'arabizi':
+        langInstruction = 'Respond in Arabizi/Franco-Arabic (Arabic using English letters like "kifak", "chou", "3endak")';
+        break;
+      case 'fr':
+        langInstruction = 'Respond in French';
+        break;
+      case 'mixed':
+        langInstruction = 'Match the customer\'s mixed language style';
+        break;
+      default:
+        langInstruction = 'Respond in English';
+    }
+
     switch (step) {
       case 'product':
-        prompt = `Generate a question in ${lang} asking the customer which product they want to order.
-Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - $${p.price}`).join(', ')}
-Ask them to specify the product name or SKU. Be friendly and professional.`;
+        prompt = `${langInstruction}. Ask the customer which product they want to order.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
+Ask them to specify the product name or SKU. Be friendly and direct. DO NOT include instructional phrases.`;
         break;
       case 'quantity':
-        prompt = `Generate a question in ${lang} asking how many units of "${session.product}" they want.
+        prompt = `${langInstruction}. Ask how many units of "${session.product}" they want.
 Available stock: ${session.max_quantity} units
-Current price: $${session.product_price} per unit`;
+Current price: ${session.product_price} per unit. Be direct and friendly.`;
         break;
       case 'name':
-        prompt = `Generate a question in ${lang} asking for the customer's full name for the order.`;
+        prompt = `${langInstruction}. Ask for the customer's full name for the order. Be direct and friendly.`;
         break;
       case 'phone':
-        prompt = `Generate a question in ${lang} asking for the customer's phone number for delivery contact.`;
+        prompt = `${langInstruction}. Ask for the customer's phone number for delivery contact. Be direct and friendly.`;
         break;
       case 'address':
-        prompt = `Generate a question in ${lang} asking for the customer's complete delivery address.`;
+        prompt = `${langInstruction}. Ask for the customer's complete delivery address. Be direct and friendly.`;
         break;
       case 'notes':
-        prompt = `Generate a question in ${lang} asking if they have any special notes or instructions for the order. Tell them they can say "none" if no notes.`;
+        prompt = `${langInstruction}. Ask if they have any special notes or instructions for the order. Tell them they can say "none" if no notes. Be direct and friendly.`;
         break;
       case 'confirm':
         const totalPrice = session.product_price * session.quantity;
-        prompt = `Generate an order confirmation summary in ${lang} with these details:
+        prompt = `${langInstruction}. Create a simple order confirmation summary with these details:
 Product: ${session.product}
 Quantity: ${session.quantity}
-Unit Price: $${session.product_price}
-Total: $${totalPrice}
+Unit Price: ${session.product_price}
+Total: ${totalPrice}
 Customer: ${session.customer_name}
 Phone: ${session.customer_phone}
 Address: ${session.address}
 Notes: ${session.notes || 'None'}
 
-Ask them to reply "YES" to confirm or "CANCEL" to abort.`;
+Ask them to reply "YES" to confirm or "CANCEL" to abort. Keep it simple and clear. DO NOT format as an email or include company names.`;
         break;
       default:
-        prompt = `Generate a helpful message in ${lang} for the ordering process step: ${step}`;
+        prompt = `${langInstruction}. Generate a helpful message for the ordering process step: ${step}. Be direct and friendly.`;
     }
   }
 
@@ -204,6 +251,7 @@ Ask them to reply "YES" to confirm or "CANCEL" to abort.`;
   } catch (err) {
     console.error('Order question generation error:', err);
     return lang === 'ar' ? "الرجاء إدخال المعلومات المطلوبة:" : 
+           lang === 'arabizi' ? "Fadlak add el ma3loumat el matloube:" :
            "Please provide the required information:";
   }
 }
@@ -222,8 +270,9 @@ async function handleProductSelection(phone, message, stock, profile) {
 
   if (!selectedProduct) {
     const errorPrompt = `Customer entered invalid product: "${message}". 
-Generate a friendly error message in ${lang} and ask them to choose from available products.
-Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - $${p.price}`).join(', ')}`;
+Generate a friendly error message matching their language style and ask them to choose from available products.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
+DO NOT include instructional phrases. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'product', stock, profile, errorPrompt);
   }
 
@@ -252,15 +301,15 @@ async function handleQuantitySelection(phone, message, stock, profile) {
 
   if (isNaN(quantity) || quantity <= 0) {
     const errorPrompt = `Customer entered invalid quantity: "${message}". 
-Generate an error message in ${lang} explaining they must enter a positive number.
-Product: ${session.product}, Max available: ${maxQuantity}`;
+Generate an error message matching their language style explaining they must enter a positive number.
+Product: ${session.product}, Max available: ${maxQuantity}. BE direct and helpful.`;
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
   if (quantity > maxQuantity) {
     const errorPrompt = `Customer requested ${quantity} but only ${maxQuantity} available.
-Generate an error message in ${lang} explaining the stock limit.
-Product: ${session.product}`;
+Generate an error message matching their language style explaining the stock limit.
+Product: ${session.product}. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
@@ -282,7 +331,7 @@ async function handleNameCollection(phone, message) {
 
   if (message.trim().length < 2) {
     const errorPrompt = `Customer entered very short name: "${message}". 
-Generate an error message in ${lang} asking for their full name (at least 2 characters).`;
+Generate an error message matching their language style asking for their full name (at least 2 characters). Be direct and helpful.`;
     return generateOrderQuestion(phone, 'name', null, null, errorPrompt);
   }
 
@@ -305,7 +354,7 @@ async function handlePhoneCollection(phone, message) {
 
   if (!phoneRegex.test(message.trim())) {
     const errorPrompt = `Customer entered invalid phone: "${message}". 
-Generate an error message in ${lang} asking for a valid phone number.`;
+Generate an error message matching their language style asking for a valid phone number. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'phone', null, null, errorPrompt);
   }
 
@@ -327,7 +376,7 @@ async function handleAddressCollection(phone, message) {
 
   if (message.trim().length < 5) {
     const errorPrompt = `Customer entered short address: "${message}". 
-Generate an error message in ${lang} asking for a complete delivery address.`;
+Generate an error message matching their language style asking for a complete delivery address. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'address', null, null, errorPrompt);
   }
 
@@ -421,8 +470,8 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
              `Order #: ${result.order_number}\n` +
              `Product: ${session.product}\n` +
              `Quantity: ${session.quantity}\n` +
-             `Unit Price: $${session.product_price}\n` +
-             `Total: $${totalAmount}\n` +
+             `Unit Price: ${session.product_price}\n` +
+             `Total: ${totalAmount}\n` +
              `Customer: ${session.customer_name}\n` +
              `Phone: ${session.customer_phone}\n` +
              `Delivery to: ${session.address}\n` +
