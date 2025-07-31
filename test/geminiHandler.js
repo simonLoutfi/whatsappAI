@@ -314,6 +314,11 @@ async function handleNotesCollection(phone, message) {
 async function handleOrderConfirmation(phone, message, stock, profile) {
   const session = getSession(phone);
   const lang = session.lang || 'en';
+if (!session.customer_name || !session.notes || !session.address || !session.customer_phone) {
+  return lang === 'ar' ? 
+    "يبدو أن هناك معلومات ناقصة. لنكمل الطلب خطوة بخطوة." :
+    "Some details are missing. Let's continue the order step by step.";
+}
 
   const confirmKeywords = {
     en: ['yes', 'confirm', 'proceed'],
@@ -336,7 +341,7 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
         productName: session.product,
         quantity: session.quantity,
         unitPrice: session.product_price,
-        notes: session.address // Using address as notes
+        notes: session.notes
       });
 
       const result = await insertOrderWithItems(
