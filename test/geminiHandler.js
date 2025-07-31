@@ -39,6 +39,27 @@ async function getGeminiResponse(phone, message) {
     setSession(phone, session);
   }
 
+  // Check if customer wants to cancel/stop the order flow
+  if (session.step && isCancellation(message, lang)) {
+    clearSession(phone);
+    return getCancellationMessage(lang);
+  }
+
+  // Check if customer wants to start over or have general conversation during order
+  if (session.step && isRestartOrGeneralChat(message, lang)) {
+    // Clear order session but keep language preference
+    const newSession = { lang: session.lang };
+    setSession(phone, newSession);
+    
+    // Handle as general conversation
+    return await handleGeneralConversation(phone, message, lang);
+  }
+
+  // If in order flow, continue with order handling
+  if (session.step) {
+    return await handleOrderFlow(phone, message);
+  }
+
   // Get business data
   const { faq, stock, business_profiles } = await getFaqAndStock();
   const profile = business_profiles[0];
@@ -47,36 +68,106 @@ async function getGeminiResponse(phone, message) {
   const conversationHistory = session.conversation || [];
   conversationHistory.push({ role: 'customer', content: message });
   
-  // Check if customer wants to make an order
-  const orderKeywords = [
-    // English
-    'order', 'buy', 'purchase', 'want', 'need', 'get',
-    // Arabic script
-    'طلب', 'شراء', 'أريد', 'بدي', 'عاوز',
-    // Arabizi/Franco-Arabic
-    'baddi', 'biddi', 'ba2a', 'bade', '3ayz', '3ayez', 'awez',
-    // French
-    'commander', 'acheter', 'veux', 'voudrais'
-  ];
-  
-  const isOrderIntent = orderKeywords.some(keyword => 
-    message.toLowerCase().includes(keyword.toLowerCase())
-  );
+  // Check if customer wants to make an order (be more specific about order intent)
+  const isOrderIntent = checkOrderIntent(message, lang);
 
   // If order intent detected, start order flow
-  if (isOrderIntent && !session.step) {
+  if (isOrderIntent) {
     console.log(`Order intent detected for ${phone}: ${message}`);
     return await initializeOrderFlow(phone, message, stock, profile, lang);
   }
   
+  // Handle general conversation
+  return await handleGeneralConversation(phone, message, lang, conversationHistory, faq, stock, profile);
+}
+
+function checkOrderIntent(message, lang) {
+  const orderKeywords = {
+    'en': ['i want to order', 'i need to buy', 'i would like to purchase', 'place order', 'make order'],
+    'ar': ['أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء'],
+    'arabizi': ['baddi order', 'biddi ashtri', 'ba2a order', 'bade order'],
+    'fr': ['je veux commander', 'je voudrais acheter', 'passer commande']
+  };
+
+  const keywords = orderKeywords[lang] || orderKeywords['en'];
+  const messageLower = message.toLowerCase();
+  
+  // More specific check - look for clear order phrases
+  return keywords.some(keyword => messageLower.includes(keyword.toLowerCase())) ||
+         (messageLower.includes('order') && (messageLower.includes('want') || messageLower.includes('need'))) ||
+         (messageLower.includes('buy') && (messageLower.includes('want') || messageLower.includes('need')));
+}
+
+function isRestartOrGeneralChat(message, lang) {
+  const restartKeywords = {
+    'en': ['hi', 'hello', 'hey', 'start over', 'restart', 'new conversation', 'help', 'info'],
+    'ar': ['مرحبا', 'أهلا', 'السلام', 'من جديد', 'مساعدة', 'معلومات'],
+    'arabizi': ['marhaba', 'ahla', 'kifak', 'shu', 'help', 'info'],
+    'fr': ['salut', 'bonjour', 'aide', 'info', 'recommencer']
+  };
+
+  const keywords = restartKeywords[lang] || restartKeywords['en'];
+  const messageLower = message.toLowerCase().trim();
+  
+  return keywords.some(keyword => 
+    messageLower === keyword.toLowerCase() || 
+    messageLower.startsWith(keyword.toLowerCase())
+  );
+}
+
+function getCancellationMessage(lang) {
+  const messages = {
+    'ar': "تم إلغاء الطلب. أهلاً بك! كيف يمكنني مساعدتك؟",
+    'arabizi': "Tamma ilgha2 el talab. Ahla bik! Kif fi sa3dik?",
+    'fr': "Commande annulée. Salut! Comment puis-je vous aider?",
+    'en': "Order cancelled. Hey there! How can I help you?"
+  };
+  return messages[lang] || messages['en'];
+}
+
+function getGreetingMessage(lang) {
+  const greetings = {
+    'ar': "أهلاً بك! كيف يمكنني مساعدتك؟",
+    'arabizi': "Ahla bik! Kif fi sa3dik?",
+    'fr': "Salut! Comment puis-je vous aider?",
+    'en': "Hey there! How can I help you?"
+  };
+  return greetings[lang] || greetings['en'];
+}
+
+async function handleGeneralConversation(phone, message, lang, conversationHistory = [], faq = [], stock = [], profile = {}) {
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  let session = getSession(phone) || {};
+
+  // Check if this is a greeting
+  const greetingKeywords = {
+    'en': ['hi', 'hello', 'hey'],
+    'ar': ['مرحبا', 'أهلا', 'السلام'],
+    'arabizi': ['marhaba', 'ahla', 'kifak'],
+    'fr': ['salut', 'bonjour']
+  };
+
+  const keywords = greetingKeywords[lang] || greetingKeywords['en'];
+  const messageLower = message.toLowerCase().trim();
+  const isGreeting = keywords.some(keyword => 
+    messageLower === keyword.toLowerCase() || 
+    messageLower.startsWith(keyword.toLowerCase())
+  );
+
+  if (isGreeting) {
+    return getGreetingMessage(lang);
+  }
+
   // Build context prompt for general conversation
   let prompt = `You are a friendly customer service agent. 
-Respond in the SAME language/style as the customer's message. If they use:
-- English: respond in English
-- Arabic script: respond in Arabic script
-- Arabizi/Franco-Arabic (Arabic in English letters like "kifak", "chou", "3endak"): respond in the same Arabizi style
-- French: respond in French  
-- Mixed languages: match their style and mix
+Respond in the detected language style: ${lang}
+
+Language instructions:
+- English (en): respond in English
+- Arabic script (ar): respond in Arabic script العربية
+- Arabizi/Franco-Arabic (arabizi): respond in Arabizi style (Arabic using English letters like "kifak", "chou", "3endak")
+- French (fr): respond in French
+- Mixed: match their style
 
 IMPORTANT: Be natural and conversational. DO NOT include phrases like "Here's a question you can use" or similar instructional text.
 
@@ -89,7 +180,7 @@ ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 
 Customer Message: ${message}
 
-If the customer wants to order something, tell them you'll help them place an order and ask them to specify which product they want from the available stock.
+If the customer asks about ordering or wants to buy something, tell them you can help them place an order and ask them to let you know specifically what they want to order from the available products.
 
 Provide a helpful, natural response matching their language style.`;
 
@@ -98,14 +189,18 @@ Provide a helpful, natural response matching their language style.`;
     const response = result.response.text().trim();
     
     // Update conversation history and session
-    conversationHistory.push({ role: 'assistant', content: response });
-    session.conversation = conversationHistory.slice(-10);
+    const updatedHistory = conversationHistory || [];
+    updatedHistory.push({ role: 'assistant', content: response });
+    session.conversation = updatedHistory.slice(-10);
+    session.lang = lang;
     setSession(phone, session);
     
     return response;
   } catch (err) {
     console.error('Gemini response error:', err);
     return lang === 'ar' ? "عذرًا، حدث خطأ. يرجى المحاولة لاحقًا" :
+           lang === 'arabizi' ? "Asfe, sar ghalat. Jarrib ba3den" :
+           lang === 'fr' ? "Désolé, une erreur s'est produite. Réessayez plus tard" :
            "Sorry, an error occurred. Please try again later.";
   }
 }
@@ -135,10 +230,7 @@ async function handleOrderFlow(phone, message) {
   // Handle cancellation
   if (isCancellation(message, lang)) {
     clearSession(phone);
-    return lang === 'ar' ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" : 
-           lang === 'arabizi' ? "Tamma ilgha2 el talab. Kif fi sa3dik?" :
-           lang === 'fr' ? "Commande annulée. Comment puis-je vous aider ?" :
-           "Order cancelled. How can I help you?";
+    return getCancellationMessage(lang);
   }
 
   // Process current step
@@ -167,8 +259,10 @@ async function handleOrderFlow(phone, message) {
       break;
     default:
       clearSession(phone);
-      return lang === 'ar' ? "لنبدأ من جديد. كيف يمكنني مساعدتك؟" :
-             "Let's start over. How can I help you?";
+      return lang === 'ar' ? "لنبدأ من جديد. أهلاً بك! كيف يمكنني مساعدتك؟" :
+             lang === 'arabizi' ? "Yalla nbalesh mn jedid. Ahla bik! Kif fi sa3dik?" :
+             lang === 'fr' ? "Recommençons. Salut! Comment puis-je vous aider?" :
+             "Let's start over. Hey there! How can I help you?";
   }
 
   return response;
@@ -207,24 +301,24 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
       case 'product':
         prompt = `${langInstruction}. Ask the customer which product they want to order.
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
-Ask them to specify the product name or SKU. Be friendly and direct. DO NOT include instructional phrases.`;
+Ask them to specify the product name or SKU. Be friendly and direct. Add a note that they can type "cancel" to stop the order. DO NOT include instructional phrases.`;
         break;
       case 'quantity':
         prompt = `${langInstruction}. Ask how many units of "${session.product}" they want.
 Available stock: ${session.max_quantity} units
-Current price: ${session.product_price} per unit. Be direct and friendly.`;
+Current price: ${session.product_price} per unit. Be direct and friendly. Remind them they can type "cancel" to stop.`;
         break;
       case 'name':
-        prompt = `${langInstruction}. Ask for the customer's full name for the order. Be direct and friendly.`;
+        prompt = `${langInstruction}. Ask for the customer's full name for the order. Be direct and friendly. Remind them they can type "cancel" to stop.`;
         break;
       case 'phone':
-        prompt = `${langInstruction}. Ask for the customer's phone number for delivery contact. Be direct and friendly.`;
+        prompt = `${langInstruction}. Ask for the customer's phone number for delivery contact. Be direct and friendly. Remind them they can type "cancel" to stop.`;
         break;
       case 'address':
-        prompt = `${langInstruction}. Ask for the customer's complete delivery address. Be direct and friendly.`;
+        prompt = `${langInstruction}. Ask for the customer's complete delivery address. Be direct and friendly. Remind them they can type "cancel" to stop.`;
         break;
       case 'notes':
-        prompt = `${langInstruction}. Ask if they have any special notes or instructions for the order. Tell them they can say "none" if no notes. Be direct and friendly.`;
+        prompt = `${langInstruction}. Ask if they have any special notes or instructions for the order. Tell them they can say "none" if no notes or "cancel" to stop. Be direct and friendly.`;
         break;
       case 'confirm':
         const totalPrice = session.product_price * session.quantity;
@@ -241,7 +335,7 @@ Notes: ${session.notes || 'None'}
 Ask them to reply "YES" to confirm or "CANCEL" to abort. Keep it simple and clear. DO NOT format as an email or include company names.`;
         break;
       default:
-        prompt = `${langInstruction}. Generate a helpful message for the ordering process step: ${step}. Be direct and friendly.`;
+        prompt = `${langInstruction}. Generate a helpful message for the ordering process step: ${step}. Be direct and friendly. Remind them they can type "cancel" to stop.`;
     }
   }
 
@@ -252,6 +346,7 @@ Ask them to reply "YES" to confirm or "CANCEL" to abort. Keep it simple and clea
     console.error('Order question generation error:', err);
     return lang === 'ar' ? "الرجاء إدخال المعلومات المطلوبة:" : 
            lang === 'arabizi' ? "Fadlak add el ma3loumat el matloube:" :
+           lang === 'fr' ? "Veuillez fournir les informations requises:" :
            "Please provide the required information:";
   }
 }
@@ -270,9 +365,9 @@ async function handleProductSelection(phone, message, stock, profile) {
 
   if (!selectedProduct) {
     const errorPrompt = `Customer entered invalid product: "${message}". 
-Generate a friendly error message matching their language style and ask them to choose from available products.
+Generate a friendly error message matching their language style (${lang}) and ask them to choose from available products.
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
-DO NOT include instructional phrases. Be direct and helpful.`;
+Remind them they can type "cancel" to stop the order. DO NOT include instructional phrases. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'product', stock, profile, errorPrompt);
   }
 
@@ -301,15 +396,15 @@ async function handleQuantitySelection(phone, message, stock, profile) {
 
   if (isNaN(quantity) || quantity <= 0) {
     const errorPrompt = `Customer entered invalid quantity: "${message}". 
-Generate an error message matching their language style explaining they must enter a positive number.
-Product: ${session.product}, Max available: ${maxQuantity}. BE direct and helpful.`;
+Generate an error message matching their language style (${lang}) explaining they must enter a positive number.
+Product: ${session.product}, Max available: ${maxQuantity}. Remind them they can type "cancel" to stop. BE direct and helpful.`;
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
   if (quantity > maxQuantity) {
     const errorPrompt = `Customer requested ${quantity} but only ${maxQuantity} available.
-Generate an error message matching their language style explaining the stock limit.
-Product: ${session.product}. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) explaining the stock limit.
+Product: ${session.product}. Remind them they can type "cancel" to stop. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
@@ -331,7 +426,7 @@ async function handleNameCollection(phone, message) {
 
   if (message.trim().length < 2) {
     const errorPrompt = `Customer entered very short name: "${message}". 
-Generate an error message matching their language style asking for their full name (at least 2 characters). Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for their full name (at least 2 characters). Remind them they can type "cancel" to stop. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'name', null, null, errorPrompt);
   }
 
@@ -354,7 +449,7 @@ async function handlePhoneCollection(phone, message) {
 
   if (!phoneRegex.test(message.trim())) {
     const errorPrompt = `Customer entered invalid phone: "${message}". 
-Generate an error message matching their language style asking for a valid phone number. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for a valid phone number. Remind them they can type "cancel" to stop. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'phone', null, null, errorPrompt);
   }
 
@@ -376,7 +471,7 @@ async function handleAddressCollection(phone, message) {
 
   if (message.trim().length < 5) {
     const errorPrompt = `Customer entered short address: "${message}". 
-Generate an error message matching their language style asking for a complete delivery address. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for a complete delivery address. Remind them they can type "cancel" to stop. Be direct and helpful.`;
     return generateOrderQuestion(phone, 'address', null, null, errorPrompt);
   }
 
@@ -396,7 +491,7 @@ async function handleNotesCollection(phone, message) {
 
   console.log(`Notes collection: ${message}`);
 
-  const noneKeywords = ['none', 'no', 'nothing', 'لا', 'لا شيء', 'ninguno', 'nada', 'aucun', 'rien'];
+  const noneKeywords = ['none', 'no', 'nothing', 'لا', 'لا شيء', 'mafi', 'wala shi', 'ninguno', 'nada', 'aucun', 'rien'];
   const isNone = noneKeywords.some(word => 
     message.toLowerCase().trim() === word.toLowerCase()
   );
@@ -429,10 +524,14 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
     clearSession(phone);
     return lang === 'ar' ? 
       "يبدو أن هناك معلومات ناقصة. لنبدأ الطلب من جديد." :
+      lang === 'arabizi' ? 
+      "Baddo ma3loumat naxi. Yalla nbalesh el order mn jedid." :
+      lang === 'fr' ?
+      "Il semble qu'il manque des informations. Recommençons la commande." :
       "Some details are missing. Let's start the order again.";
   }
 
-  const confirmKeywords = ['yes', 'confirm', 'proceed', 'ok', 'نعم', 'تأكيد', 'sí', 'confirmar', 'oui', 'confirmer'];
+  const confirmKeywords = ['yes', 'confirm', 'proceed', 'ok', 'نعم', 'تأكيد', 'aywa', 'sí', 'confirmar', 'oui', 'confirmer'];
   const isConfirmed = confirmKeywords.some(word => 
     message.toLowerCase().includes(word.toLowerCase())
   );
@@ -466,31 +565,39 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
       clearSession(phone);
       
       const totalAmount = session.product_price * session.quantity;
-      return `✅ Order Confirmed!\n\n` +
-             `Order #: ${result.order_number}\n` +
-             `Product: ${session.product}\n` +
-             `Quantity: ${session.quantity}\n` +
-             `Unit Price: ${session.product_price}\n` +
-             `Total: ${totalAmount}\n` +
-             `Customer: ${session.customer_name}\n` +
-             `Phone: ${session.customer_phone}\n` +
-             `Delivery to: ${session.address}\n` +
-             `${session.notes ? `Notes: ${session.notes}\n` : ''}` +
-             `\nThank you for your order! We'll contact you soon.`;
+      const successMessages = {
+        'ar': `✅ تم تأكيد الطلب!\n\nرقم الطلب: ${result.order_number}\nالمنتج: ${session.product}\nالكمية: ${session.quantity}\nسعر الوحدة: ${session.product_price}\nالإجمالي: ${totalAmount}\nالاسم: ${session.customer_name}\nالهاتف: ${session.customer_phone}\nالتوصيل إلى: ${session.address}\n${session.notes ? `ملاحظات: ${session.notes}\n` : ''}\nشكراً لك! سنتواصل معك قريباً.`,
+        'arabizi': `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${session.product}\nQuantity: ${session.quantity}\nUnit Price: ${session.product_price}\nTotal: ${totalAmount}\nIsm: ${session.customer_name}\nTelefon: ${session.customer_phone}\nTawseel 3ala: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nShukran! Ra7 nit2asal ma3ak 2ariban.`,
+        'fr': `✅ Commande Confirmée!\n\nCommande #: ${result.order_number}\nProduit: ${session.product}\nQuantité: ${session.quantity}\nPrix unitaire: ${session.product_price}\nTotal: ${totalAmount}\nClient: ${session.customer_name}\nTéléphone: ${session.customer_phone}\nLivraison à: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nMerci! Nous vous contacterons bientôt.`,
+        'en': `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${session.product}\nQuantity: ${session.quantity}\nUnit Price: ${session.product_price}\nTotal: ${totalAmount}\nCustomer: ${session.customer_name}\nPhone: ${session.customer_phone}\nDelivery to: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nThank you for your order! We'll contact you soon.`
+      };
+      
+      return successMessages[lang] || successMessages['en'];
     } catch (error) {
       console.error('Order insertion failed:', error);
       clearSession(phone);
-      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again or contact support.`;
+      const errorMessages = {
+        'ar': `❌ فشل الطلب\n\nخطأ: ${error.message}\nيرجى المحاولة مرة أخرى أو الاتصال بالدعم.`,
+        'arabizi': `❌ Order Failed\n\nError: ${error.message}\nJarrib tani aw ittasil bel support.`,
+        'fr': `❌ Commande Échouée\n\nErreur: ${error.message}\nVeuillez réessayer ou contacter le support.`,
+        'en': `❌ Order Failed\n\nError: ${error.message}\nPlease try again or contact support.`
+      };
+      return errorMessages[lang] || errorMessages['en'];
     }
   } else {
     clearSession(phone);
-    return lang === 'ar' ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" : 
-           "Order cancelled. How can I help you?";
+    return getCancellationMessage(lang);
   }
 }
 
 function isCancellation(message, lang) {
-  const cancelKeywords = ['cancel', 'stop', 'abort', 'إلغاء', 'الغاء', 'cancelar', 'parar', 'annuler', 'arrêter'];
+  const cancelKeywords = [
+    'cancel', 'stop', 'abort', 'quit', 'exit',
+    'إلغاء', 'الغاء', 'توقف', 'خروج',
+    'cancel', 'wa2if', 'stop', 'khalas',
+    'cancelar', 'parar', 'salir',
+    'annuler', 'arrêter', 'sortir'
+  ];
   return cancelKeywords.some(word => 
     message.toLowerCase().includes(word.toLowerCase())
   );
