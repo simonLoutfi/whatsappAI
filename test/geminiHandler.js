@@ -74,7 +74,14 @@ async function getGeminiResponse(phone, message) {
   // If order intent detected, start order flow
   if (isOrderIntent) {
     console.log(`Order intent detected for ${phone}: ${message}`);
+    console.log(`Current session before order:`, session);
     return await initializeOrderFlow(phone, message, stock, profile, lang);
+  }
+  
+  // If there's an active order session but no order intent, continue with order flow
+  if (session.step && session.orderStarted) {
+    console.log(`Continuing order flow for ${phone}, step: ${session.step}`);
+    return await handleOrderFlow(phone, message);
   }
   
   // Handle general conversation
@@ -83,19 +90,30 @@ async function getGeminiResponse(phone, message) {
 
 function checkOrderIntent(message, lang) {
   const orderKeywords = {
-    'en': ['i want to order', 'i need to buy', 'i would like to purchase', 'place order', 'make order'],
-    'ar': ['أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء'],
-    'arabizi': ['baddi order', 'biddi ashtri', 'ba2a order', 'bade order'],
+    'en': ['i want to order', 'i need to buy', 'i would like to purchase', 'place order', 'make order', 'order please', 'want to order'],
+    'ar': ['أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء', 'بدي أشتري'],
+    'arabizi': ['baddi order', 'biddi ashtri', 'ba2a order', 'bade order', 'baddi ashtri', 'bade ashtri'],
     'fr': ['je veux commander', 'je voudrais acheter', 'passer commande']
   };
 
   const keywords = orderKeywords[lang] || orderKeywords['en'];
-  const messageLower = message.toLowerCase();
+  const messageLower = message.toLowerCase().trim();
   
-  // More specific check - look for clear order phrases
-  return keywords.some(keyword => messageLower.includes(keyword.toLowerCase())) ||
-         (messageLower.includes('order') && (messageLower.includes('want') || messageLower.includes('need'))) ||
-         (messageLower.includes('buy') && (messageLower.includes('want') || messageLower.includes('need')));
+  // Check for exact matches first (most reliable)
+  const exactMatches = keywords.some(keyword => messageLower === keyword.toLowerCase());
+  if (exactMatches) return true;
+  
+  // Check for partial matches
+  const partialMatches = keywords.some(keyword => messageLower.includes(keyword.toLowerCase()));
+  if (partialMatches) return true;
+  
+  // Additional specific checks for arabizi
+  if (lang === 'arabizi' || lang === 'mixed') {
+    if (messageLower.includes('bade') && messageLower.includes('order')) return true;
+    if (messageLower.includes('baddi') && messageLower.includes('order')) return true;
+  }
+  
+  return false;
 }
 
 function isRestartOrGeneralChat(message, lang) {
@@ -206,15 +224,19 @@ Provide a helpful, natural response matching their language style.`;
 }
 
 async function initializeOrderFlow(phone, message, stock, profile, lang) {
-  console.log(`Initializing order flow for ${phone}`);
+  console.log(`Initializing order flow for ${phone} with message: ${message}`);
   
-  // Initialize order session
+  // Initialize order session with step tracking
   const session = {
     step: 'product',
     lang: lang,
-    conversation: [{ role: 'customer', content: message }]
+    conversation: [{ role: 'customer', content: message }],
+    orderStarted: true,
+    timestamp: new Date().toISOString()
   };
   setSession(phone, session);
+  
+  console.log(`Order session initialized:`, session);
   
   return generateOrderQuestion(phone, 'product', stock, profile);
 }
@@ -299,9 +321,10 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
 
     switch (step) {
       case 'product':
-        prompt = `${langInstruction}. Ask the customer which product they want to order.
-Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
-Ask them to specify the product name or SKU. Be friendly and direct. Add a note that they can type "cancel" to stop the order. DO NOT include instructional phrases.`;
+        prompt = `${langInstruction}. The customer wants to place an order. Ask them to choose ONE specific product from the available list.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
+
+Say something like "Which product would you like to order?" and list the available products clearly. Ask them to tell you the product name or SKU. Be friendly and direct. Mention they can type "cancel" to stop the order. DO NOT include instructional phrases.`;
         break;
       case 'quantity':
         prompt = `${langInstruction}. Ask how many units of "${session.product}" they want.
@@ -355,19 +378,30 @@ async function handleProductSelection(phone, message, stock, profile) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
   
-  console.log(`Product selection: ${message}, Available stock:`, stock.map(s => s.name));
+  console.log(`Product selection: ${message}, Available stock:`, stock.map(s => `${s.name} (${s.sku})`));
   
-  const selectedProduct = stock.find(item => 
-    item.name.toLowerCase().includes(message.toLowerCase()) ||
-    item.sku.toString().toLowerCase() === message.trim().toLowerCase() ||
-    message.toLowerCase().includes(item.name.toLowerCase())
-  );
+  // More flexible product matching
+  const messageLower = message.toLowerCase().trim();
+  const selectedProduct = stock.find(item => {
+    const itemNameLower = item.name.toLowerCase();
+    const itemSku = item.sku.toString().toLowerCase();
+    
+    return (
+      itemNameLower.includes(messageLower) ||
+      messageLower.includes(itemNameLower) ||
+      itemSku === messageLower ||
+      // Handle common arabizi variations
+      (itemNameLower === 'banana' && (messageLower.includes('moz') || messageLower.includes('banana'))) ||
+      (itemNameLower === 'apple' && (messageLower.includes('tefeh') || messageLower.includes('teffeh') || messageLower.includes('apple')))
+    );
+  });
 
   if (!selectedProduct) {
-    const errorPrompt = `Customer entered invalid product: "${message}". 
-Generate a friendly error message matching their language style (${lang}) and ask them to choose from available products.
-Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - ${p.price}`).join(', ')}
-Remind them they can type "cancel" to stop the order. DO NOT include instructional phrases. Be direct and helpful.`;
+    console.log(`No product found for: ${message}`);
+    const errorPrompt = `Customer entered: "${message}" but we couldn't find a matching product. 
+Generate a friendly error message in ${lang} language style and ask them to choose from available products.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
+Remind them they can type "cancel" to stop the order. BE direct and helpful. Show the exact product names they can choose from.`;
     return generateOrderQuestion(phone, 'product', stock, profile, errorPrompt);
   }
 
@@ -379,7 +413,8 @@ Remind them they can type "cancel" to stop the order. DO NOT include instruction
     product_sku: selectedProduct.sku,
     product_price: selectedProduct.price,
     max_quantity: selectedProduct.quantity,
-    step: 'quantity'
+    step: 'quantity',
+    orderStarted: true
   };
   setSession(phone, session);
 
