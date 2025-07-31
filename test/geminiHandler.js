@@ -299,18 +299,14 @@ async function handleNotesCollection(phone, message) {
   };
   setSession(phone, session);
 
-  // Generate confirmation message
-  const confirmationPrompt = `Generate order confirmation in ${lang} with these details:
+  // Simplified confirmation prompt
+  const confirmationPrompt = `Generate a simple order confirmation request in English with these details:
   - Product: ${session.product}
   - Quantity: ${session.quantity}
-  - Price: ${session.product_price}
-  - Total: ${session.product_price * session.quantity}
-  - Name: ${session.customer_name}
-  - Phone: ${session.customer_phone}
-  - Address: ${session.address}
-  - Notes: ${notes || 'None'}
+  - Total: $${session.product_price * session.quantity}
+  - Delivery to: ${session.address}
   
-  Ask customer to confirm (yes/no) or cancel.`;
+  Ask customer to reply with "confirm" to proceed or "cancel" to abort.`;
 
   return generateOrderQuestion(phone, 'confirm', null, null, confirmationPrompt);
 }
@@ -332,6 +328,7 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
 
   if (isConfirmed) {
     try {
+      // Insert order into database
       const result = await insertOrderWithItems(
         session.customer_phone,
         phone,
@@ -340,25 +337,26 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
         session.product,
         session.quantity,
         session.product_price,
-        session.notes
+        session.address // Added address to notes
       );
 
       clearSession(phone);
       
-      return lang === 'ar' 
-        ? `✅ تم تأكيد الطلب!\n\nرقم الطلب: ${result.order_number}\nالمنتج: ${result.product_name}\nالكمية: ${result.quantity}\nالمجموع: ${result.total_amount}\n\nشكرًا لطلبك!` 
-        : `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${result.product_name}\nQuantity: ${result.quantity}\nTotal: ${result.total_amount}\n\nThank you for your order!`;
+      // Simple confirmation message in English
+      return `✅ Order Confirmed!\n\n` +
+             `Order #: ${result.order_number}\n` +
+             `Product: ${result.product_name}\n` +
+             `Quantity: ${result.quantity}\n` +
+             `Total: $${result.total_amount}\n` +
+             `Delivery to: ${session.address}\n\n` +
+             `Thank you for your order!`;
     } catch (error) {
       clearSession(phone);
-      return lang === 'ar' 
-        ? `❌ فشل في تأكيد الطلب\n\nالخطأ: ${error.message}\nالرجاء المحاولة مرة أخرى` 
-        : `❌ Order Failed\n\nError: ${error.message}\nPlease try again`;
+      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again`;
     }
   } else {
     clearSession(phone);
-    return lang === 'ar' 
-      ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" 
-      : "Order cancelled. How can I help you?";
+    return "Order cancelled. How can I help you?";
   }
 }
 
