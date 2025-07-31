@@ -28,9 +28,25 @@ app.post('/', async (req, res) => {
   const body = req.body;
 
   try {
-    const messageText = body.entry[0].changes[0].value.messages[0].text.body;
-    const phone = body.entry[0].changes[0].value.messages[0].from;
+    // Check if message exists
+    if (!body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
+      console.log('No message found in webhook body');
+      return res.status(200).json({ status: 'no_message' });
+    }
+
+    const messageData = body.entry[0].changes[0].value.messages[0];
+    const messageText = messageData.text?.body;
+    const phone = messageData.from;
+
+    if (!messageText || !phone) {
+      console.log('Missing message text or phone number');
+      return res.status(200).json({ status: 'invalid_message' });
+    }
+
+    console.log(`Received message from ${phone}: ${messageText}`);
+
     const session = getSession(phone) || {};
+    console.log(`Current session for ${phone}:`, session);
 
     // Handle cancellation in any language
     const cancelKeywords = {
@@ -45,23 +61,33 @@ app.post('/', async (req, res) => {
     );
 
     if (isCancellation) {
+      console.log(`Cancellation detected for ${phone}`);
       clearSession(phone);
       const response = await getGeminiResponse(phone, "The customer wants to cancel. Acknowledge the cancellation and ask how you can help.");
       await sendWhatsAppMessage(phone, response);
       return res.status(200).json({ status: 'success' });
     }
 
-    // Check if we're in an order flow
-    const response = session.step 
-      ? await handleOrderFlow(phone, messageText)
-      : await getGeminiResponse(phone, messageText);
+    let response;
 
+    // Check if we're in an order flow (session has 'step' property)
+    if (session.step) {
+      console.log(`Continuing order flow for ${phone} at step: ${session.step}`);
+      response = await handleOrderFlow(phone, messageText);
+    } else {
+      console.log(`Using general response for ${phone}`);
+      response = await getGeminiResponse(phone, messageText);
+    }
+
+    console.log(`Sending response to ${phone}: ${response}`);
     await sendWhatsAppMessage(phone, response);
+    
     return res.status(200).json({ status: 'success' });
 
   } catch (err) {
     console.error('Error handling webhook:', err);
-    res.status(400).send('No valid message received');
+    console.error('Request body:', JSON.stringify(body, null, 2));
+    res.status(400).send('Error processing message');
   }
 });
 

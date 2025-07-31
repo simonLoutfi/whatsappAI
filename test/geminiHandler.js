@@ -1,6 +1,6 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { getSession, setSession, clearSession } from './sessionHandler.js';
-import { getFaqAndStock, insertOrderWithItems } from './supabaseHandler.js';
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { getSession, setSession, clearSession } = require('./sessionHandler');
+const { getFaqAndStock, insertOrderWithItems } = require('./supabaseHandler');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -36,7 +36,19 @@ async function getGeminiResponse(phone, message) {
   const conversationHistory = session.conversation || [];
   conversationHistory.push({ role: 'customer', content: message });
   
-  // Build context prompt
+  // Check if customer wants to make an order
+  const orderKeywords = ['order', 'buy', 'purchase', 'want', 'need', 'get'];
+  const isOrderIntent = orderKeywords.some(keyword => 
+    message.toLowerCase().includes(keyword.toLowerCase())
+  );
+
+  // If order intent detected, start order flow
+  if (isOrderIntent && !session.step) {
+    console.log(`Order intent detected for ${phone}: ${message}`);
+    return await initializeOrderFlow(phone, message, stock, profile, lang);
+  }
+  
+  // Build context prompt for general conversation
   let prompt = `You are the customer service agent for ${profile.business_name}. 
 Respond in ${lang} using the same style as the customer. Be friendly, professional and helpful.
 
@@ -50,6 +62,8 @@ ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 Current Session State: ${JSON.stringify(session)}
 
 Customer Message: ${message}
+
+If the customer wants to order something, tell them you'll help them place an order and ask them to specify which product they want from the available stock.
 
 Provide a helpful response in ${lang} based on this information.`;
 
@@ -70,28 +84,33 @@ Provide a helpful response in ${lang} based on this information.`;
   }
 }
 
+async function initializeOrderFlow(phone, message, stock, profile, lang) {
+  console.log(`Initializing order flow for ${phone}`);
+  
+  // Initialize order session
+  const session = {
+    step: 'product',
+    lang: lang,
+    conversation: [{ role: 'customer', content: message }]
+  };
+  setSession(phone, session);
+  
+  return generateOrderQuestion(phone, 'product', stock, profile);
+}
+
 async function handleOrderFlow(phone, message) {
   let session = getSession(phone) || {};
   const { stock, business_profiles } = await getFaqAndStock();
   const profile = business_profiles[0];
   const lang = session.lang || 'en';
 
+  console.log(`Handling order flow for ${phone}, step: ${session.step}, message: ${message}`);
+
   // Handle cancellation
   if (isCancellation(message, lang)) {
     clearSession(phone);
     return lang === 'ar' ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" : 
            "Order cancelled. How can I help you?";
-  }
-
-  // Initialize order flow if not started
-  if (!session.step) {
-    session = {
-      step: 'product',
-      lang: lang,
-      conversation: [{ role: 'customer', content: message }]
-    };
-    setSession(phone, session);
-    return generateOrderQuestion(phone, 'product', stock, profile);
   }
 
   // Process current step
@@ -132,13 +151,52 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
   const session = getSession(phone);
   const lang = session?.lang || 'en';
 
-  let prompt = customPrompt || `Generate a clear, friendly question in ${lang} for a customer during the ordering process. 
-Business: ${JSON.stringify(profile)}
-Current Stock: ${JSON.stringify(stock)}
-Current Step: ${step}
-Session Context: ${JSON.stringify(session)}
+  let prompt;
+  
+  if (customPrompt) {
+    prompt = customPrompt;
+  } else {
+    switch (step) {
+      case 'product':
+        prompt = `Generate a question in ${lang} asking the customer which product they want to order.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - $${p.price}`).join(', ')}
+Ask them to specify the product name or SKU. Be friendly and professional.`;
+        break;
+      case 'quantity':
+        prompt = `Generate a question in ${lang} asking how many units of "${session.product}" they want.
+Available stock: ${session.max_quantity} units
+Current price: $${session.product_price} per unit`;
+        break;
+      case 'name':
+        prompt = `Generate a question in ${lang} asking for the customer's full name for the order.`;
+        break;
+      case 'phone':
+        prompt = `Generate a question in ${lang} asking for the customer's phone number for delivery contact.`;
+        break;
+      case 'address':
+        prompt = `Generate a question in ${lang} asking for the customer's complete delivery address.`;
+        break;
+      case 'notes':
+        prompt = `Generate a question in ${lang} asking if they have any special notes or instructions for the order. Tell them they can say "none" if no notes.`;
+        break;
+      case 'confirm':
+        const totalPrice = session.product_price * session.quantity;
+        prompt = `Generate an order confirmation summary in ${lang} with these details:
+Product: ${session.product}
+Quantity: ${session.quantity}
+Unit Price: $${session.product_price}
+Total: $${totalPrice}
+Customer: ${session.customer_name}
+Phone: ${session.customer_phone}
+Address: ${session.address}
+Notes: ${session.notes || 'None'}
 
-Provide ONLY the question to ask the customer for this step.`;
+Ask them to reply "YES" to confirm or "CANCEL" to abort.`;
+        break;
+      default:
+        prompt = `Generate a helpful message in ${lang} for the ordering process step: ${step}`;
+    }
+  }
 
   try {
     const result = await model.generateContent(prompt);
@@ -154,17 +212,22 @@ async function handleProductSelection(phone, message, stock, profile) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
   
+  console.log(`Product selection: ${message}, Available stock:`, stock.map(s => s.name));
+  
   const selectedProduct = stock.find(item => 
-    item.name.toLowerCase() === message.toLowerCase() ||
-    item.sku.toString().toLowerCase() === message.trim().toLowerCase()
+    item.name.toLowerCase().includes(message.toLowerCase()) ||
+    item.sku.toString().toLowerCase() === message.trim().toLowerCase() ||
+    message.toLowerCase().includes(item.name.toLowerCase())
   );
 
   if (!selectedProduct) {
-    const errorPrompt = `Customer entered invalid product: ${message}. 
-      Regenerate product question in ${lang} with friendly error message. 
-      Available products: ${stock.map(p => `${p.name} (${p.sku})`).join(', ')}`;
-    return generateOrderQuestion(phone, 'product_error', stock, profile, errorPrompt);
+    const errorPrompt = `Customer entered invalid product: "${message}". 
+Generate a friendly error message in ${lang} and ask them to choose from available products.
+Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - $${p.price}`).join(', ')}`;
+    return generateOrderQuestion(phone, 'product', stock, profile, errorPrompt);
   }
+
+  console.log(`Product selected:`, selectedProduct);
 
   session = {
     ...session,
@@ -182,28 +245,23 @@ async function handleProductSelection(phone, message, stock, profile) {
 async function handleQuantitySelection(phone, message, stock, profile) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
-  const quantity = parseInt(message);
-  const maxQuantity = session.max_quantity || stock.find(p => p.name === session.product)?.quantity || 0;
+  const quantity = parseInt(message.trim());
+  const maxQuantity = session.max_quantity;
 
-  if (isNaN(quantity)) {
-    const errorPrompt = `Customer entered invalid quantity: ${message}. 
-      Regenerate quantity question in ${lang} explaining they must enter a number. 
-      Product: ${session.product}, Max available: ${maxQuantity}`;
-    return generateOrderQuestion(phone, 'quantity_error', stock, profile, errorPrompt);
-  }
+  console.log(`Quantity selection: ${message}, parsed: ${quantity}, max: ${maxQuantity}`);
 
-  if (quantity <= 0) {
-    const errorPrompt = `Customer entered quantity (${quantity}) must be positive. 
-      Regenerate quantity question in ${lang} explaining this requirement. 
-      Product: ${session.product}`;
-    return generateOrderQuestion(phone, 'quantity_error', stock, profile, errorPrompt);
+  if (isNaN(quantity) || quantity <= 0) {
+    const errorPrompt = `Customer entered invalid quantity: "${message}". 
+Generate an error message in ${lang} explaining they must enter a positive number.
+Product: ${session.product}, Max available: ${maxQuantity}`;
+    return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
   if (quantity > maxQuantity) {
-    const errorPrompt = `Customer entered quantity (${quantity}) exceeds available stock (${maxQuantity}). 
-      Regenerate quantity question in ${lang} explaining the stock limit. 
-      Product: ${session.product}`;
-    return generateOrderQuestion(phone, 'quantity_error', stock, profile, errorPrompt);
+    const errorPrompt = `Customer requested ${quantity} but only ${maxQuantity} available.
+Generate an error message in ${lang} explaining the stock limit.
+Product: ${session.product}`;
+    return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
   session = {
@@ -220,10 +278,12 @@ async function handleNameCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  if (message.trim().length < 3) {
-    const errorPrompt = `Customer entered very short name: ${message}. 
-      Regenerate name question in ${lang} explaining they need at least 3 characters.`;
-    return generateOrderQuestion(phone, 'name_error', null, null, errorPrompt);
+  console.log(`Name collection: ${message}`);
+
+  if (message.trim().length < 2) {
+    const errorPrompt = `Customer entered very short name: "${message}". 
+Generate an error message in ${lang} asking for their full name (at least 2 characters).`;
+    return generateOrderQuestion(phone, 'name', null, null, errorPrompt);
   }
 
   session = {
@@ -239,12 +299,14 @@ async function handleNameCollection(phone, message) {
 async function handlePhoneCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
-  const phoneRegex = /^[+]?[\d\s-]{8,}$/;
+  const phoneRegex = /^[+]?[\d\s\-\(\)]{8,}$/;
 
-  if (!phoneRegex.test(message)) {
-    const errorPrompt = `Customer entered invalid phone: ${message}. 
-      Regenerate phone question in ${lang} explaining they need a valid number.`;
-    return generateOrderQuestion(phone, 'phone_error', null, null, errorPrompt);
+  console.log(`Phone collection: ${message}`);
+
+  if (!phoneRegex.test(message.trim())) {
+    const errorPrompt = `Customer entered invalid phone: "${message}". 
+Generate an error message in ${lang} asking for a valid phone number.`;
+    return generateOrderQuestion(phone, 'phone', null, null, errorPrompt);
   }
 
   session = {
@@ -261,10 +323,12 @@ async function handleAddressCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  if (message.trim().length < 10) {
-    const errorPrompt = `Customer entered short address: ${message}. 
-      Regenerate address question in ${lang} explaining they need complete address.`;
-    return generateOrderQuestion(phone, 'address_error', null, null, errorPrompt);
+  console.log(`Address collection: ${message}`);
+
+  if (message.trim().length < 5) {
+    const errorPrompt = `Customer entered short address: "${message}". 
+Generate an error message in ${lang} asking for a complete delivery address.`;
+    return generateOrderQuestion(phone, 'address', null, null, errorPrompt);
   }
 
   session = {
@@ -281,16 +345,14 @@ async function handleNotesCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  const noneKeywords = {
-    en: ['none', 'no', 'nothing'],
-    ar: ['لا', 'لا شيء'],
-    es: ['ninguno', 'nada'],
-    fr: ['aucun', 'rien']
-  };
+  console.log(`Notes collection: ${message}`);
 
-  const notes = noneKeywords[lang]?.some(word => 
-    message.toLowerCase().includes(word.toLowerCase())
-  ) ? '' : message;
+  const noneKeywords = ['none', 'no', 'nothing', 'لا', 'لا شيء', 'ninguno', 'nada', 'aucun', 'rien'];
+  const isNone = noneKeywords.some(word => 
+    message.toLowerCase().trim() === word.toLowerCase()
+  );
+
+  const notes = isNone ? '' : message.trim();
 
   session = {
     ...session,
@@ -299,35 +361,30 @@ async function handleNotesCollection(phone, message) {
   };
   setSession(phone, session);
 
-  // Simplified confirmation prompt
-  const confirmationPrompt = `Generate a simple order confirmation request in English with these details:
-  - Product: ${session.product}
-  - Quantity: ${session.quantity}
-  - Total: $${session.product_price * session.quantity}
-  - Delivery to: ${session.address}
-  
-  Ask customer to reply with "confirm" to proceed or "cancel" to abort.`;
-
-  return generateOrderQuestion(phone, 'confirm', null, null, confirmationPrompt);
+  return generateOrderQuestion(phone, 'confirm');
 }
 
 async function handleOrderConfirmation(phone, message, stock, profile) {
   const session = getSession(phone);
   const lang = session.lang || 'en';
-if (!session.customer_name || !session.notes || !session.address || !session.customer_phone) {
-  return lang === 'ar' ? 
-    "يبدو أن هناك معلومات ناقصة. لنكمل الطلب خطوة بخطوة." :
-    "Some details are missing. Let's continue the order step by step.";
-}
 
-  const confirmKeywords = {
-    en: ['yes', 'confirm', 'proceed'],
-    ar: ['نعم', 'تأكيد'],
-    es: ['sí', 'confirmar'],
-    fr: ['oui', 'confirmer']
-  };
+  console.log(`Order confirmation: ${message}, Session:`, session);
 
-  const isConfirmed = confirmKeywords[lang]?.some(word => 
+  // Check required fields
+  if (!session.customer_name || !session.customer_phone || !session.address) {
+    console.log('Missing required fields:', {
+      name: session.customer_name,
+      phone: session.customer_phone,
+      address: session.address
+    });
+    clearSession(phone);
+    return lang === 'ar' ? 
+      "يبدو أن هناك معلومات ناقصة. لنبدأ الطلب من جديد." :
+      "Some details are missing. Let's start the order again.";
+  }
+
+  const confirmKeywords = ['yes', 'confirm', 'proceed', 'ok', 'نعم', 'تأكيد', 'sí', 'confirmar', 'oui', 'confirmer'];
+  const isConfirmed = confirmKeywords.some(word => 
     message.toLowerCase().includes(word.toLowerCase())
   );
 
@@ -341,7 +398,7 @@ if (!session.customer_name || !session.notes || !session.address || !session.cus
         productName: session.product,
         quantity: session.quantity,
         unitPrice: session.product_price,
-        notes: session.notes
+        notes: `Address: ${session.address}${session.notes ? `\nNotes: ${session.notes}` : ''}`
       });
 
       const result = await insertOrderWithItems(
@@ -352,42 +409,42 @@ if (!session.customer_name || !session.notes || !session.address || !session.cus
         session.product,
         session.quantity,
         session.product_price,
-        session.address // Delivery address as notes
+        `Address: ${session.address}${session.notes ? `\nNotes: ${session.notes}` : ''}`
       );
 
       console.log('Order inserted successfully:', result);
       
       clearSession(phone);
       
+      const totalAmount = session.product_price * session.quantity;
       return `✅ Order Confirmed!\n\n` +
              `Order #: ${result.order_number}\n` +
              `Product: ${session.product}\n` +
              `Quantity: ${session.quantity}\n` +
-             `Total: $${session.product_price * session.quantity}\n` +
-             `Delivery to: ${session.address}\n\n` +
-             `Thank you for your order!`;
+             `Unit Price: $${session.product_price}\n` +
+             `Total: $${totalAmount}\n` +
+             `Customer: ${session.customer_name}\n` +
+             `Phone: ${session.customer_phone}\n` +
+             `Delivery to: ${session.address}\n` +
+             `${session.notes ? `Notes: ${session.notes}\n` : ''}` +
+             `\nThank you for your order! We'll contact you soon.`;
     } catch (error) {
       console.error('Order insertion failed:', error);
       clearSession(phone);
-      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again or contact support`;
+      return `❌ Order Failed\n\nError: ${error.message}\nPlease try again or contact support.`;
     }
   } else {
     clearSession(phone);
-    return "Order cancelled. How can I help you?";
+    return lang === 'ar' ? "تم إلغاء الطلب. كيف يمكنني مساعدتك؟" : 
+           "Order cancelled. How can I help you?";
   }
 }
 
 function isCancellation(message, lang) {
-  const cancelKeywords = {
-    en: ['cancel', 'stop', 'abort'],
-    ar: ['إلغاء', 'الغاء'],
-    es: ['cancelar', 'parar'],
-    fr: ['annuler', 'arrêter']
-  };
-  
-  return cancelKeywords[lang]?.some(word => 
+  const cancelKeywords = ['cancel', 'stop', 'abort', 'إلغاء', 'الغاء', 'cancelar', 'parar', 'annuler', 'arrêter'];
+  return cancelKeywords.some(word => 
     message.toLowerCase().includes(word.toLowerCase())
   );
 }
 
-export { detectLanguage, getGeminiResponse, handleOrderFlow };
+module.exports = { detectLanguage, getGeminiResponse, handleOrderFlow };
