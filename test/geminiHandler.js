@@ -160,8 +160,8 @@ async function handleGeneralConversation(phone, message, lang, conversationHisto
   // Check if this is a greeting
   const greetingKeywords = {
     'en': ['hi', 'hello', 'hey'],
-    'ar': ['مرحبا', 'أهلا', 'السلام'],
-    'arabizi': ['marhaba', 'ahla', 'kifak'],
+    'ar': ['مرحبا', 'أهلا', 'السلام', 'مرحباً', 'اهلاً'],
+    'arabizi': ['marhaba', 'ahla', 'kifak', 'shu', 'hai', 'hello'],
     'fr': ['salut', 'bonjour']
   };
 
@@ -188,6 +188,7 @@ Language instructions:
 - Mixed: match their style
 
 IMPORTANT: Be natural and conversational. DO NOT include phrases like "Here's a question you can use" or similar instructional text.
+CRITICAL: If customer shows any order intent (wants to buy/order something), DO NOT handle the order in conversation. Instead, direct them to use specific order phrases like "I want to order" or "bade order".
 
 Business Profile: ${JSON.stringify(profile)}
 Available Stock: ${JSON.stringify(stock)}
@@ -198,7 +199,7 @@ ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 
 Customer Message: ${message}
 
-If the customer asks about ordering or wants to buy something, tell them you can help them place an order and ask them to let you know specifically what they want to order from the available products.
+For order requests: Tell them to say "I want to order" (English), "bade order" (Arabizi), "أريد أن أطلب" (Arabic), or "je veux commander" (French) to start the formal ordering process.
 
 Provide a helpful, natural response matching their language style.`;
 
@@ -328,20 +329,62 @@ Say something like "Which product would you like to order?" and list the availab
         break;
       case 'quantity':
         prompt = `${langInstruction}. Ask how many units of "${session.product}" they want.
+
+IMPORTANT: Make sure to specify that they need to give you a NUMBER only.
 Available stock: ${session.max_quantity} units
-Current price: ${session.product_price} per unit. Be direct and friendly. Remind them they can type "cancel" to stop.`;
+Current price: ${session.product_price} per unit
+
+Ask them to tell you exactly how many they want (just the number). Be direct and friendly. Remind them they can type "cancel" to stop.
+
+Example responses:
+- English: "How many ${session.product} would you like? (Available: ${session.max_quantity})"
+- Arabic: "كم وحدة من ${session.product} تريد؟ (متوفر: ${session.max_quantity})"
+- Arabizi: "Adeh wahde mn ${session.product} badak? (Mawjud: ${session.max_quantity})"
+- French: "Combien de ${session.product} voulez-vous? (Disponible: ${session.max_quantity})"`;
         break;
       case 'name':
-        prompt = `${langInstruction}. Ask for the customer's full name for the order. Be direct and friendly. Remind them they can type "cancel" to stop.`;
+        prompt = `${langInstruction}. Ask for the customer's full name for the order.
+
+Ask them to provide their complete name for delivery. Be direct and friendly. Remind them they can type "cancel" to stop.
+
+Example prompts:
+- English: "What's your full name for the delivery?"
+- Arabic: "ما هو اسمك الكامل للتوصيل؟"  
+- Arabizi: "Shu esmak el kamel lal tawseel?"
+- French: "Quel est votre nom complet pour la livraison?"`;
         break;
       case 'phone':
-        prompt = `${langInstruction}. Ask for the customer's phone number for delivery contact. Be direct and friendly. Remind them they can type "cancel" to stop.`;
+        prompt = `${langInstruction}. Ask for the customer's phone number for delivery contact.
+
+Ask them to provide their phone number so delivery can contact them. Be direct and friendly. Remind them they can type "cancel" to stop.
+
+Example prompts:
+- English: "What's your phone number for delivery contact?"
+- Arabic: "ما هو رقم هاتفك للتواصل عند التوصيل؟"
+- Arabizi: "Shu raqam telefonak lal tawseel?"  
+- French: "Quel est votre numéro de téléphone pour la livraison?"`;
         break;
       case 'address':
-        prompt = `${langInstruction}. Ask for the customer's complete delivery address. Be direct and friendly. Remind them they can type "cancel" to stop.`;
+        prompt = `${langInstruction}. Ask for the customer's complete delivery address.
+
+Ask them to provide their full address for delivery. Be direct and friendly. Remind them they can type "cancel" to stop.
+
+Example prompts:
+- English: "What's your complete delivery address?"
+- Arabic: "ما هو عنوانك الكامل للتوصيل؟"
+- Arabizi: "Shu 3onwanak el kamel lal tawseel?"
+- French: "Quelle est votre adresse complète de livraison?"`;
         break;
       case 'notes':
-        prompt = `${langInstruction}. Ask if they have any special notes or instructions for the order. Tell them they can say "none" if no notes or "cancel" to stop. Be direct and friendly.`;
+        prompt = `${langInstruction}. Ask if they have any special notes or instructions for the order.
+
+Tell them they can add special instructions or say "none"/"la" if no notes needed. Be direct and friendly. Remind them they can type "cancel" to stop.
+
+Example prompts:
+- English: "Any special instructions for your order? (or say 'none')"
+- Arabic: "أي تعليمات خاصة للطلب؟ (أو قل 'لا')"
+- Arabizi: "Ay ta3limat khaseh lal order? (aw 2oul 'la')"
+- French: "Des instructions spéciales pour votre commande? (ou dites 'aucun')"`;
         break;
       case 'confirm':
         const totalPrice = session.product_price * session.quantity;
