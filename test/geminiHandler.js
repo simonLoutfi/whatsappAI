@@ -97,8 +97,7 @@ function checkOrderIntent(message, lang) {
     'arabizi': [
       'baddi order', 'biddi ashtri', 'ba2a order', 'bade order', 
       'baddi ashtri', 'bade ashtri', 'bidi order', 'bidi ashtri',
-      'biddi order', 'ba2a ashtri', 'badde order', 'badde ashtri',
-      'eh mna3mol order', 'eh order', 'eh bade order' // Add these
+      'biddi order', 'ba2a ashtri', 'badde order', 'badde ashtri'
     ],
     'fr': [
       'je veux commander', 'je voudrais acheter', 'passer commande',
@@ -318,10 +317,6 @@ async function initializeOrderFlow(phone, message, stock, profile, lang) {
   // Clear any existing session and start fresh
   clearSession(phone);
   
-    if (lang === 'arabizi') {
-    const productList = stock.map(p => `${p.name} (${p.sku})`).join(', ');
-    return `Ahla bik! Chou baddak torder men el available products?\n\nAvailable: ${productList}\n\nBtell3na chou baddak wala "cancel" la t2ouf.`;
-  }
   // Initialize clean order session
   const session = {
     step: 'product',
@@ -423,33 +418,6 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
         langInstruction = 'Respond in English';
     }
 
-      if (lang === 'arabizi') {
-    switch (step) {
-      case 'product':
-        prompt = `Ahla bik! Chou baddak torder men el available products?\n\nAvailable: ${stock.map(p => `${p.name} (${p.sku})`).join(', ')}\n\nBtell3na chou baddak wala "cancel" la t2ouf.`;
-        break;
-      case 'quantity':
-        prompt = `Kam ${session.product} baddak?\n\nAvailable: ${session.max_quantity}\nPrice: ${session.product_price} lel wahed\n\n2oulna kam baddak (raqam bass). Btell3na wala "cancel" la t2ouf.`;
-        break;
-      case 'name':
-        prompt = `Shou ismak el kamil?\n\nBtell3na ismak kermel n3raf n2addemlak el order. Btell3na wala "cancel" la t2ouf.`;
-        break;
-      case 'phone':
-        prompt = `Shou raqamak?\n\nBtell3na raqamak kermel y2dar el delivery yitwasal ma3ak. Btell3na wala "cancel" la t2ouf.`;
-        break;
-      case 'address':
-        prompt = `Wayn baddak el delivery?\n\nBtell3na el address kermel nwassellak. Btell3na wala "cancel" la t2ouf.`;
-        break;
-      case 'notes':
-        prompt = `Fi shi notes aw instructions?\n\nBtell3na wala "none" la ma fi shi. Btell3na wala "cancel" la t2ouf.`;
-        break;
-      case 'confirm':
-        const totalPrice = session.product_price * session.quantity;
-        prompt = `Order details:\nProduct: ${session.product}\nQuantity: ${session.quantity}\nPrice: ${session.product_price}\nTotal: ${totalPrice}\nName: ${session.customer_name}\nPhone: ${session.customer_phone}\nAddress: ${session.address}\nNotes: ${session.notes || 'None'}\n\nBaddak tconfirm? Ektob "YES" la tconfirm wala "CANCEL" la t2ouf.`;
-        break;
-    }
-  }
-
     // CRITICAL: Added instruction to prevent multiple examples
     const commonInstruction = `${langInstruction}. 
 
@@ -543,18 +511,9 @@ async function handleProductSelection(phone, message, stock, profile) {
       itemNameLower.includes(messageLower) ||
       messageLower.includes(itemNameLower) ||
       itemSku === messageLower ||
-      // Improved Arabizi variations
-      (itemNameLower === 'banana' && (
-        messageLower.includes('moz') || 
-        messageLower.includes('banana') ||
-        messageLower.includes('mawz') // Add common Arabizi spellings
-      )) ||
-      (itemNameLower === 'apple' && (
-        messageLower.includes('tefeh') || 
-        messageLower.includes('teffeh') || 
-        messageLower.includes('apple') ||
-        messageLower.includes('tuffah')
-      ))
+      // Handle common arabizi variations
+      (itemNameLower === 'banana' && (messageLower.includes('moz') || messageLower.includes('banana'))) ||
+      (itemNameLower === 'apple' && (messageLower.includes('tefeh') || messageLower.includes('teffeh') || messageLower.includes('apple')))
     );
   });
 
