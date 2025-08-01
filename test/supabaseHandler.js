@@ -16,7 +16,6 @@ async function getFaqAndStock() {
 
   return { faq, stock, business_profiles };
 }
-
 async function insertOrderWithItems(
   customer_phone,
   customer_whatsapp,
@@ -32,59 +31,23 @@ async function insertOrderWithItems(
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const totalAmount = unitPrice * quantity;
 
-    // 1. First insert the order
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert({
-        order_number: orderNumber,
-        customer_name,
-        customer_phone,
-        customer_whatsapp,
-        notes,
-        total_amount: totalAmount,
-        status: 'pending'
-      })
-      .select()
-      .single();
+    // Start a transaction
+    const { data, error } = await supabase.rpc('create_order_with_items', {
+      p_order_number: orderNumber,
+      p_customer_name: customer_name,
+      p_customer_phone: customer_phone,
+      p_customer_whatsapp: customer_whatsapp,
+      p_product_sku: productSku,
+      p_product_name: productName,
+      p_quantity: quantity,
+      p_unit_price: unitPrice,
+      p_total_amount: totalAmount,
+      p_notes: notes
+    });
 
-    if (orderError) throw orderError;
+    if (error) throw error;
 
-    // 2. Get the stock item to get its ID
-    const { data: stockItem, error: stockError } = await supabase
-      .from('stock')
-      .select('id')
-      .eq('sku', productSku)
-      .single();
-
-    if (stockError) throw stockError;
-
-    // 3. Insert the order item
-    const { error: itemError } = await supabase
-      .from('order_items')
-      .insert({
-        order_id: order.id,
-        stock_id: stockItem.id,
-        quantity: quantity,
-        unit_price: unitPrice,
-        total_price: totalAmount
-      });
-
-    if (itemError) throw itemError;
-
-    // 4. Update stock quantity (optional)
-    await supabase
-      .from('stock')
-      .update({ quantity: supabase.rpc('decrement', { val: quantity }) })
-      .eq('sku', productSku);
-
-    return {
-      order_id: order.id,
-      order_number: orderNumber,
-      customer_name,
-      product_name: productName,
-      quantity,
-      total_amount: totalAmount
-    };
+    return data;
   } catch (error) {
     console.error('Order processing error:', {
       message: error.message,
