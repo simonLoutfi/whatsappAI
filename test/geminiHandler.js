@@ -8,10 +8,12 @@ async function detectLanguage(message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   const prompt = `Detect the language of this message. Consider:
 - English: standard English
-- Arabic: Arabic script (العربية)
+- Arabic: Arabic script (العربية) - ANY message containing Arabic letters/script
 - Arabizi/Franco-Arabic: Arabic written in Latin script (like "kifak", "chou", "3endak", "bade", "baddi")
 - French: French language
 - Mixed: if multiple languages are used
+
+IMPORTANT: If the message contains ANY Arabic script characters (العربية), classify it as "ar" even if it has some Latin characters.
 
 Respond ONLY with one of: en, ar, arabizi, fr, mixed
 
@@ -33,26 +35,27 @@ async function getGeminiResponse(phone, message) {
   let session = getSession(phone) || {};
   const lang = session.lang || await detectLanguage(message);
   
-  // Update language if not set
-  if (!session.lang) {
-    session.lang = lang;
+  // Update language if not set OR if customer switches to Arabic
+  const currentLang = await detectLanguage(message);
+  if (!session.lang || currentLang === 'ar') {
+    session.lang = currentLang;
     setSession(phone, session);
   }
 
   // Check if customer wants to cancel/stop the order flow
-  if (session.step && isCancellation(message, lang)) {
+  if (session.step && isCancellation(message, session.lang)) {
     clearSession(phone);
-    return getCancellationMessage(lang);
+    return getCancellationMessage(session.lang);
   }
 
   // Check if customer wants to start over or have general conversation during order
-  if (session.step && isRestartOrGeneralChat(message, lang)) {
+  if (session.step && isRestartOrGeneralChat(message, session.lang)) {
     // Clear order session but keep language preference
     const newSession = { lang: session.lang };
     setSession(phone, newSession);
     
     // Handle as general conversation
-    return await handleGeneralConversation(phone, message, lang);
+    return await handleGeneralConversation(phone, message, session.lang);
   }
 
   // If in order flow, continue with order handling
@@ -69,17 +72,17 @@ async function getGeminiResponse(phone, message) {
   conversationHistory.push({ role: 'customer', content: message });
   
   // Check if customer wants to make an order - FIXED VERSION
-  const isOrderIntent = checkOrderIntent(message, lang);
+  const isOrderIntent = checkOrderIntent(message, session.lang);
 
   // If order intent detected, start order flow - FIXED
   if (isOrderIntent) {
-    console.log(`Order intent detected for ${phone}: ${message} (lang: ${lang})`);
+    console.log(`Order intent detected for ${phone}: ${message} (lang: ${session.lang})`);
     console.log(`Current session before order:`, session);
-    return await initializeOrderFlow(phone, message, stock, profile, lang);
+    return await initializeOrderFlow(phone, message, stock, profile, session.lang);
   }
   
   // Handle general conversation
-  return await handleGeneralConversation(phone, message, lang, conversationHistory, faq, stock, profile);
+  return await handleGeneralConversation(phone, message, session.lang, conversationHistory, faq, stock, profile);
 }
 
 // FIXED: More comprehensive order intent detection
@@ -92,7 +95,7 @@ function checkOrderIntent(message, lang) {
     ],
     'ar': [
       'أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء', 
-      'بدي أشتري', 'بدي أطلب منك', 'عايز أطلب'
+      'بدي أشتري', 'بدي أطلب منك', 'عايز أطلب', 'بدي اطلب'
     ],
     'arabizi': [
       'baddi order', 'biddi ashtri', 'ba2a order', 'bade order', 
@@ -149,7 +152,7 @@ function checkOrderIntent(message, lang) {
 function isRestartOrGeneralChat(message, lang) {
   const restartKeywords = {
     'en': ['hi', 'hello', 'hey', 'start over', 'restart', 'new conversation', 'help', 'info'],
-    'ar': ['مرحبا', 'أهلا', 'السلام', 'من جديد', 'مساعدة', 'معلومات'],
+    'ar': ['مرحبا', 'أهلا', 'السلام', 'من جديد', 'مساعدة', 'معلومات', 'مراحب', 'مرحباً'],
     'arabizi': ['marhaba', 'ahla', 'kifak', 'shu', 'help', 'info'],
     'fr': ['salut', 'bonjour', 'aide', 'info', 'recommencer']
   };
@@ -175,7 +178,7 @@ function getCancellationMessage(lang) {
 
 function getGreetingMessage(lang) {
   const greetings = {
-    'ar': "أهلاً بك! كيف يمكنني مساعدتك؟",
+    'ar': "أهلاً وسهلاً! كيف يمكنني مساعدتك؟",
     'arabizi': "Ahla bik! Kif fi sa3dik?",
     'fr': "Salut! Comment puis-je vous aider?",
     'en': "Hey there! How can I help you?"
@@ -190,7 +193,7 @@ async function handleGeneralConversation(phone, message, lang, conversationHisto
   // Check if this is a greeting
   const greetingKeywords = {
     'en': ['hi', 'hello', 'hey'],
-    'ar': ['مרحبا', 'أهلا', 'السلام', 'مرحباً', 'اهلاً'],
+    'ar': ['مرحبا', 'أهلا', 'السلام', 'مرحباً', 'اهلاً', 'مراحب', 'اهلا'],
     'arabizi': ['marhaba', 'ahla', 'kifak', 'shu', 'hai', 'hello'],
     'fr': ['salut', 'bonjour']
   };
@@ -212,10 +215,16 @@ Respond in the detected language style: ${lang}
 
 Language instructions:
 - English (en): respond in English
-- Arabic script (ar): respond in Arabic script العربية
+- Arabic script (ar): respond ONLY in Arabic script العربية - NO Latin letters, NO mixed language
 - Arabizi/Franco-Arabic (arabizi): respond in Arabizi style (Arabic using English letters like "kifak", "chou", "3endak")
 - French (fr): respond in French
 - Mixed: match their style
+
+CRITICAL ARABIC INSTRUCTIONS:
+- If lang is "ar", you MUST respond ONLY in Arabic script (العربية)
+- Do NOT mix Arabic and Latin letters when lang is "ar"
+- Use proper Arabic vocabulary for products: تفاح (apple), موز (banana), خوخ (peach)
+- When customer says they don't understand English, respond purely in Arabic
 
 IMPORTANT: Be natural and conversational. Give ONE clear, direct response. DO NOT include multiple examples or instructional phrases.
 
@@ -403,7 +412,7 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
     let langInstruction = '';
     switch (lang) {
       case 'ar':
-        langInstruction = 'Respond in Arabic script (العربية)';
+        langInstruction = 'Respond ONLY in Arabic script (العربية) - NO Latin letters, NO mixed language';
         break;
       case 'arabizi':
         langInstruction = 'Respond in Arabizi/Franco-Arabic (Arabic using English letters like "kifak", "chou", "3endak", "badak")';
@@ -429,7 +438,9 @@ IMPORTANT: Provide ONLY ONE clear, direct response. Do NOT include multiple exam
 
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
 
-Ask which product they want and list the available products clearly. Ask them to tell you the product name or SKU. Be friendly and direct. Mention they can type "cancel" to stop the order.`;
+Ask which product they want and list the available products clearly. Ask them to tell you the product name or SKU. Be friendly and direct. Mention they can type "cancel" to stop the order.
+
+If language is Arabic (ar), use Arabic names for products: تفاح (apple), موز (banana), خوخ (peach)`;
         break;
       case 'quantity':
         prompt = `${commonInstruction}. Ask how many units of "${session.product}" they want.
@@ -501,7 +512,7 @@ async function handleProductSelection(phone, message, stock, profile) {
   console.log(`Message: ${message}`);
   console.log(`Available stock:`, stock.map(s => `${s.name} (${s.sku})`));
   
-  // More flexible product matching
+  // More flexible product matching including Arabic names
   const messageLower = message.toLowerCase().trim();
   const selectedProduct = stock.find(item => {
     const itemNameLower = item.name.toLowerCase();
@@ -512,8 +523,9 @@ async function handleProductSelection(phone, message, stock, profile) {
       messageLower.includes(itemNameLower) ||
       itemSku === messageLower ||
       // Handle common arabizi variations
-      (itemNameLower === 'banana' && (messageLower.includes('moz') || messageLower.includes('banana'))) ||
-      (itemNameLower === 'apple' && (messageLower.includes('tefeh') || messageLower.includes('teffeh') || messageLower.includes('apple')))
+      (itemNameLower === 'banana' && (messageLower.includes('moz') || messageLower.includes('banana') || messageLower.includes('موز'))) ||
+      (itemNameLower === 'apple' && (messageLower.includes('tefeh') || messageLower.includes('teffeh') || messageLower.includes('apple') || messageLower.includes('تفاح'))) ||
+      (itemNameLower === 'peach' && (messageLower.includes('darra') || messageLower.includes('peach') || messageLower.includes('خوخ')))
     );
   });
 
@@ -523,6 +535,8 @@ async function handleProductSelection(phone, message, stock, profile) {
 
 Generate ONE friendly error message in ${lang} language style and ask them to choose from available products.
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
+
+If language is Arabic (ar), use Arabic names: تفاح (apple), موز (banana), خوخ (peach)
 
 Remind them they can type "cancel" to stop the order. Be direct and helpful. Show the exact product names they can choose from.
 
@@ -714,7 +728,7 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
       "Some details are missing. Let's start the order again.";
   }
 
-  const confirmKeywords = ['yes', 'confirm', 'proceed', 'ok', 'نعم', 'تأكيد', 'aywa', 'sí', 'confirmar', 'oui', 'confirmer'];
+  const confirmKeywords = ['yes', 'confirm', 'proceed', 'ok', 'نعم', 'تأكيد', 'موافق', 'aywa', 'sí', 'confirmar', 'oui', 'confirmer'];
   const isConfirmed = confirmKeywords.some(word => 
     message.toLowerCase().includes(word.toLowerCase())
   );
@@ -776,7 +790,7 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
 function isCancellation(message, lang) {
   const cancelKeywords = [
     'cancel', 'stop', 'abort', 'quit', 'exit',
-    'إلغاء', 'الغاء', 'توقف', 'خروج',
+    'إلغاء', 'الغاء', 'توقف', 'خروج', 'إيقاف',
     'cancel', 'wa2if', 'stop', 'khalas',
     'cancelar', 'parar', 'salir',
     'annuler', 'arrêter', 'sortir'
