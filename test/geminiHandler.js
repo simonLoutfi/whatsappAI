@@ -1,6 +1,6 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { getSession, setSession, clearSession } = require('./sessionHandler');
-const { getFaqAndStock, insertOrderWithItems } = require('./supabaseHandler');
+const { getFaqAndStock, insertOrderWithItems, insertUnknownQuestion } = require('./supabaseHandler');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -68,51 +68,81 @@ async function getGeminiResponse(phone, message) {
   const conversationHistory = session.conversation || [];
   conversationHistory.push({ role: 'customer', content: message });
   
-  // Check if customer wants to make an order (be more specific about order intent)
+  // Check if customer wants to make an order - FIXED VERSION
   const isOrderIntent = checkOrderIntent(message, lang);
 
-  // If order intent detected, start order flow
+  // If order intent detected, start order flow - FIXED
   if (isOrderIntent) {
-    console.log(`Order intent detected for ${phone}: ${message}`);
+    console.log(`Order intent detected for ${phone}: ${message} (lang: ${lang})`);
     console.log(`Current session before order:`, session);
     return await initializeOrderFlow(phone, message, stock, profile, lang);
-  }
-  
-  // If there's an active order session but no order intent, continue with order flow
-  if (session.step && session.orderStarted) {
-    console.log(`Continuing order flow for ${phone}, step: ${session.step}`);
-    return await handleOrderFlow(phone, message);
   }
   
   // Handle general conversation
   return await handleGeneralConversation(phone, message, lang, conversationHistory, faq, stock, profile);
 }
 
+// FIXED: More comprehensive order intent detection
 function checkOrderIntent(message, lang) {
   const orderKeywords = {
-    'en': ['i want to order', 'i need to buy', 'i would like to purchase', 'place order', 'make order', 'order please', 'want to order'],
-    'ar': ['أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء', 'بدي أشتري'],
-    'arabizi': ['baddi order', 'biddi ashtri', 'ba2a order', 'bade order', 'baddi ashtri', 'bade ashtri'],
-    'fr': ['je veux commander', 'je voudrais acheter', 'passer commande']
+    'en': [
+      'i want to order', 'i need to buy', 'i would like to purchase', 
+      'place order', 'make order', 'order please', 'want to order',
+      'i\'d like to order', 'can i order', 'let me order'
+    ],
+    'ar': [
+      'أريد أن أطلب', 'بدي أطلب', 'عاوز أشتري', 'أريد شراء', 
+      'بدي أشتري', 'بدي أطلب منك', 'عايز أطلب'
+    ],
+    'arabizi': [
+      'baddi order', 'biddi ashtri', 'ba2a order', 'bade order', 
+      'baddi ashtri', 'bade ashtri', 'bidi order', 'bidi ashtri',
+      'biddi order', 'ba2a ashtri', 'badde order', 'badde ashtri'
+    ],
+    'fr': [
+      'je veux commander', 'je voudrais acheter', 'passer commande',
+      'je veux acheter', 'commander', 'acheter'
+    ]
   };
 
   const keywords = orderKeywords[lang] || orderKeywords['en'];
   const messageLower = message.toLowerCase().trim();
   
+  console.log(`Checking order intent for: "${messageLower}" in language: ${lang}`);
+  console.log(`Keywords to check:`, keywords);
+  
   // Check for exact matches first (most reliable)
-  const exactMatches = keywords.some(keyword => messageLower === keyword.toLowerCase());
-  if (exactMatches) return true;
-  
-  // Check for partial matches
-  const partialMatches = keywords.some(keyword => messageLower.includes(keyword.toLowerCase()));
-  if (partialMatches) return true;
-  
-  // Additional specific checks for arabizi
-  if (lang === 'arabizi' || lang === 'mixed') {
-    if (messageLower.includes('bade') && messageLower.includes('order')) return true;
-    if (messageLower.includes('baddi') && messageLower.includes('order')) return true;
+  for (const keyword of keywords) {
+    if (messageLower === keyword.toLowerCase()) {
+      console.log(`Exact match found: "${keyword}"`);
+      return true;
+    }
   }
   
+  // Check for partial matches
+  for (const keyword of keywords) {
+    if (messageLower.includes(keyword.toLowerCase())) {
+      console.log(`Partial match found: "${keyword}"`);
+      return true;
+    }
+  }
+  
+  // Additional specific checks for arabizi variations
+  if (lang === 'arabizi' || lang === 'mixed') {
+    const arabiziPatterns = [
+      /\b(bade|badde|baddi|bidi|biddi|ba2a)\s+(order|ashtri)\b/i,
+      /\byalla\s+(bade|badde|baddi)\s+(order|ashtri)\b/i
+    ];
+    
+    for (const pattern of arabiziPatterns) {
+      if (pattern.test(messageLower)) {
+        console.log(`Arabizi pattern match found: ${pattern}`);
+        return true;
+      }
+    }
+  }
+  
+  console.log(`No order intent found for: "${messageLower}"`);
   return false;
 }
 
@@ -176,7 +206,7 @@ async function handleGeneralConversation(phone, message, lang, conversationHisto
     return getGreetingMessage(lang);
   }
 
-  // Build context prompt for general conversation
+  // Build context prompt for general conversation with confidence assessment
   let prompt = `You are a friendly customer service agent. 
 Respond in the detected language style: ${lang}
 
@@ -188,7 +218,21 @@ Language instructions:
 - Mixed: match their style
 
 IMPORTANT: Be natural and conversational. DO NOT include phrases like "Here's a question you can use" or similar instructional text.
-CRITICAL: If customer shows any order intent (wants to buy/order something), DO NOT handle the order in conversation. Instead, direct them to use specific order phrases like "I want to order" or "bade order".
+
+CRITICAL ORDER INSTRUCTIONS:
+- If customer shows ANY order intent (wants to buy/order something), respond naturally but remind them to use these EXACT phrases:
+  * English: "I want to order"
+  * Arabizi: "bade order" 
+  * Arabic: "أريد أن أطلب"
+  * French: "je veux commander"
+- DO NOT try to handle orders in general conversation
+- Be helpful but redirect clearly to the order phrases
+
+CONFIDENCE ASSESSMENT:
+After your response, on a NEW LINE, add exactly one of these confidence indicators:
+- CONFIDENT: if you can answer the question well using the provided business data
+- UNCERTAIN: if you're not sure about the answer or it's not covered in the business data
+- UNKNOWN: if you cannot answer the question at all or need more information
 
 Business Profile: ${JSON.stringify(profile)}
 Available Stock: ${JSON.stringify(stock)}
@@ -199,13 +243,43 @@ ${conversationHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n')}
 
 Customer Message: ${message}
 
-For order requests: Tell them to say "I want to order" (English), "bade order" (Arabizi), "أريد أن أطلب" (Arabic), or "je veux commander" (French) to start the formal ordering process.
-
-Provide a helpful, natural response matching their language style.`;
+Provide a helpful, natural response matching their language style. Keep it conversational and friendly.
+Remember to add the confidence indicator on a new line at the end.`;
 
   try {
     const result = await model.generateContent(prompt);
-    const response = result.response.text().trim();
+    const fullResponse = result.response.text().trim();
+    
+    // Parse response and confidence level
+    const lines = fullResponse.split('\n');
+    const lastLine = lines[lines.length - 1].trim();
+    const confidenceIndicators = ['CONFIDENT', 'UNCERTAIN', 'UNKNOWN'];
+    
+    let confidence = 'CONFIDENT'; // default
+    let response = fullResponse;
+    
+    // Check if last line contains confidence indicator
+    if (confidenceIndicators.some(indicator => lastLine.includes(indicator))) {
+      confidence = confidenceIndicators.find(indicator => lastLine.includes(indicator)) || 'CONFIDENT';
+      // Remove confidence line from response
+      response = lines.slice(0, -1).join('\n').trim();
+    }
+    
+    console.log(`=== CONVERSATION CONFIDENCE ASSESSMENT ===`);
+    console.log(`Message: ${message}`);
+    console.log(`Confidence: ${confidence}`);
+    console.log(`Language: ${lang}`);
+    
+    // If confidence is UNCERTAIN or UNKNOWN, save question to FAQ for admin review
+    if (confidence === 'UNCERTAIN' || confidence === 'UNKNOWN') {
+      try {
+        await insertUnknownQuestion(message, lang, confidence);
+        console.log(`Unknown question saved to FAQ: ${message}`);
+      } catch (error) {
+        console.error('Failed to save unknown question:', error);
+        // Don't fail the conversation if FAQ insertion fails
+      }
+    }
     
     // Update conversation history and session
     const updatedHistory = conversationHistory || [];
@@ -217,6 +291,15 @@ Provide a helpful, natural response matching their language style.`;
     return response;
   } catch (err) {
     console.error('Gemini response error:', err);
+    
+    // Save the question as unknown since we couldn't process it
+    try {
+      await insertUnknownQuestion(message, lang, 'UNKNOWN');
+      console.log(`Error case - Unknown question saved to FAQ: ${message}`);
+    } catch (faqError) {
+      console.error('Failed to save unknown question in error case:', faqError);
+    }
+    
     return lang === 'ar' ? "عذرًا، حدث خطأ. يرجى المحاولة لاحقًا" :
            lang === 'arabizi' ? "Asfe, sar ghalat. Jarrib ba3den" :
            lang === 'fr' ? "Désolé, une erreur s'est produite. Réessayez plus tard" :
@@ -224,10 +307,17 @@ Provide a helpful, natural response matching their language style.`;
   }
 }
 
+// FIXED: Cleaner order flow initialization
 async function initializeOrderFlow(phone, message, stock, profile, lang) {
-  console.log(`Initializing order flow for ${phone} with message: ${message}`);
+  console.log(`=== INITIALIZING ORDER FLOW ===`);
+  console.log(`Phone: ${phone}`);
+  console.log(`Message: ${message}`);
+  console.log(`Language: ${lang}`);
   
-  // Initialize order session with step tracking
+  // Clear any existing session and start fresh
+  clearSession(phone);
+  
+  // Initialize clean order session
   const session = {
     step: 'product',
     lang: lang,
@@ -248,7 +338,11 @@ async function handleOrderFlow(phone, message) {
   const profile = business_profiles[0];
   const lang = session.lang || 'en';
 
-  console.log(`Handling order flow for ${phone}, step: ${session.step}, message: ${message}`);
+  console.log(`=== HANDLING ORDER FLOW ===`);
+  console.log(`Phone: ${phone}`);
+  console.log(`Step: ${session.step}`);
+  console.log(`Message: ${message}`);
+  console.log(`Language: ${lang}`);
 
   // Handle cancellation
   if (isCancellation(message, lang)) {
@@ -296,6 +390,10 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
   const session = getSession(phone);
   const lang = session?.lang || 'en';
 
+  console.log(`=== GENERATING ORDER QUESTION ===`);
+  console.log(`Step: ${step}`);
+  console.log(`Language: ${lang}`);
+
   let prompt;
   
   if (customPrompt) {
@@ -308,7 +406,7 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
         langInstruction = 'Respond in Arabic script (العربية)';
         break;
       case 'arabizi':
-        langInstruction = 'Respond in Arabizi/Franco-Arabic (Arabic using English letters like "kifak", "chou", "3endak")';
+        langInstruction = 'Respond in Arabizi/Franco-Arabic (Arabic using English letters like "kifak", "chou", "3endak", "badak")';
         break;
       case 'fr':
         langInstruction = 'Respond in French';
@@ -323,9 +421,18 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
     switch (step) {
       case 'product':
         prompt = `${langInstruction}. The customer wants to place an order. Ask them to choose ONE specific product from the available list.
+
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
 
-Say something like "Which product would you like to order?" and list the available products clearly. Ask them to tell you the product name or SKU. Be friendly and direct. Mention they can type "cancel" to stop the order. DO NOT include instructional phrases.`;
+Ask which product they want and list the available products clearly. Ask them to tell you the product name or SKU. Be friendly and direct. Mention they can type "cancel" to stop the order. 
+
+Example responses by language:
+- English: "Great! Which product would you like to order? Here are the options: [list products]. Just tell me the product name or SKU."
+- Arabizi: "Tayib! Ayi product badak? Hayi el khayarat: [list products]. Qelli esem el product aw el SKU."
+- Arabic: "رائع! أي منتج تريد أن تطلب؟ هذه الخيارات: [list products]. قل لي اسم المنتج أو الرقم."
+- French: "Super! Quel produit voulez-vous commander? Voici les options: [list products]. Dites-moi le nom du produit ou le SKU."
+
+DO NOT include instructional phrases.`;
         break;
       case 'quantity':
         prompt = `${langInstruction}. Ask how many units of "${session.product}" they want.
@@ -407,7 +514,9 @@ Ask them to reply "YES" to confirm or "CANCEL" to abort. Keep it simple and clea
 
   try {
     const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+    const response = result.response.text().trim();
+    console.log(`Generated question: ${response}`);
+    return response;
   } catch (err) {
     console.error('Order question generation error:', err);
     return lang === 'ar' ? "الرجاء إدخال المعلومات المطلوبة:" : 
@@ -421,7 +530,9 @@ async function handleProductSelection(phone, message, stock, profile) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
   
-  console.log(`Product selection: ${message}, Available stock:`, stock.map(s => `${s.name} (${s.sku})`));
+  console.log(`=== PRODUCT SELECTION ===`);
+  console.log(`Message: ${message}`);
+  console.log(`Available stock:`, stock.map(s => `${s.name} (${s.sku})`));
   
   // More flexible product matching
   const messageLower = message.toLowerCase().trim();
@@ -442,9 +553,18 @@ async function handleProductSelection(phone, message, stock, profile) {
   if (!selectedProduct) {
     console.log(`No product found for: ${message}`);
     const errorPrompt = `Customer entered: "${message}" but we couldn't find a matching product. 
+
 Generate a friendly error message in ${lang} language style and ask them to choose from available products.
 Available products: ${stock.map(p => `${p.name} (SKU: ${p.sku}) - Price: ${p.price}`).join(', ')}
-Remind them they can type "cancel" to stop the order. BE direct and helpful. Show the exact product names they can choose from.`;
+
+Remind them they can type "cancel" to stop the order. Be direct and helpful. Show the exact product names they can choose from.
+
+Example responses:
+- English: "Sorry, I couldn't find that product. Please choose from: [list products]"
+- Arabizi: "Asfe, ma la2it hal product. Ikhtaar mn: [list products]"
+- Arabic: "آسف، لم أجد هذا المنتج. اختر من: [list products]"
+- French: "Désolé, je n'ai pas trouvé ce produit. Choisissez parmi: [list products]"`;
+    
     return generateOrderQuestion(phone, 'product', stock, profile, errorPrompt);
   }
 
@@ -470,19 +590,34 @@ async function handleQuantitySelection(phone, message, stock, profile) {
   const quantity = parseInt(message.trim());
   const maxQuantity = session.max_quantity;
 
-  console.log(`Quantity selection: ${message}, parsed: ${quantity}, max: ${maxQuantity}`);
+  console.log(`=== QUANTITY SELECTION ===`);
+  console.log(`Message: ${message}, parsed: ${quantity}, max: ${maxQuantity}`);
 
   if (isNaN(quantity) || quantity <= 0) {
     const errorPrompt = `Customer entered invalid quantity: "${message}". 
 Generate an error message matching their language style (${lang}) explaining they must enter a positive number.
-Product: ${session.product}, Max available: ${maxQuantity}. Remind them they can type "cancel" to stop. BE direct and helpful.`;
+Product: ${session.product}, Max available: ${maxQuantity}. Remind them they can type "cancel" to stop. Be direct and helpful.
+
+Example responses:
+- English: "Please enter a valid number. How many ${session.product} do you want? (Available: ${maxQuantity})"
+- Arabizi: "Fadlak add raqam sa7i7. Adeh ${session.product} badak? (Mawjud: ${maxQuantity})"
+- Arabic: "يرجى إدخال رقم صحيح. كم ${session.product} تريد؟ (متوفر: ${maxQuantity})"
+- French: "Veuillez entrer un nombre valide. Combien de ${session.product} voulez-vous? (Disponible: ${maxQuantity})"`;
+    
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
   if (quantity > maxQuantity) {
     const errorPrompt = `Customer requested ${quantity} but only ${maxQuantity} available.
 Generate an error message matching their language style (${lang}) explaining the stock limit.
-Product: ${session.product}. Remind them they can type "cancel" to stop. Be direct and helpful.`;
+Product: ${session.product}. Remind them they can type "cancel" to stop. Be direct and helpful.
+
+Example responses:
+- English: "Sorry, we only have ${maxQuantity} ${session.product} available. How many would you like?"
+- Arabizi: "Asfe, 3anna bas ${maxQuantity} ${session.product}. Adeh badak?"
+- Arabic: "آسف، لدينا فقط ${maxQuantity} ${session.product}. كم تريد؟"
+- French: "Désolé, nous n'avons que ${maxQuantity} ${session.product} disponibles. Combien en voulez-vous?"`;
+    
     return generateOrderQuestion(phone, 'quantity', stock, profile, errorPrompt);
   }
 
@@ -500,11 +635,19 @@ async function handleNameCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  console.log(`Name collection: ${message}`);
+  console.log(`=== NAME COLLECTION ===`);
+  console.log(`Message: ${message}`);
 
   if (message.trim().length < 2) {
     const errorPrompt = `Customer entered very short name: "${message}". 
-Generate an error message matching their language style (${lang}) asking for their full name (at least 2 characters). Remind them they can type "cancel" to stop. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for their full name (at least 2 characters). Remind them they can type "cancel" to stop. Be direct and helpful.
+
+Example responses:
+- English: "Please enter your full name (at least 2 characters)"
+- Arabizi: "Fadlak add esmak el kamel (aktar mn 2 huruf)"
+- Arabic: "يرجى إدخال اسمك الكامل (حرفان على الأقل)"
+- French: "Veuillez entrer votre nom complet (au moins 2 caractères)"`;
+    
     return generateOrderQuestion(phone, 'name', null, null, errorPrompt);
   }
 
@@ -523,11 +666,19 @@ async function handlePhoneCollection(phone, message) {
   const lang = session.lang || 'en';
   const phoneRegex = /^[+]?[\d\s\-\(\)]{8,}$/;
 
-  console.log(`Phone collection: ${message}`);
+  console.log(`=== PHONE COLLECTION ===`);
+  console.log(`Message: ${message}`);
 
   if (!phoneRegex.test(message.trim())) {
     const errorPrompt = `Customer entered invalid phone: "${message}". 
-Generate an error message matching their language style (${lang}) asking for a valid phone number. Remind them they can type "cancel" to stop. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for a valid phone number. Remind them they can type "cancel" to stop. Be direct and helpful.
+
+Example responses:
+- English: "Please enter a valid phone number (at least 8 digits)"
+- Arabizi: "Fadlak add raqam telefon sa7i7 (aktar mn 8 arqam)"
+- Arabic: "يرجى إدخال رقم هاتف صحيح (8 أرقام على الأقل)"
+- French: "Veuillez entrer un numéro de téléphone valide (au moins 8 chiffres)"`;
+    
     return generateOrderQuestion(phone, 'phone', null, null, errorPrompt);
   }
 
@@ -545,11 +696,19 @@ async function handleAddressCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  console.log(`Address collection: ${message}`);
+  console.log(`=== ADDRESS COLLECTION ===`);
+  console.log(`Message: ${message}`);
 
   if (message.trim().length < 5) {
     const errorPrompt = `Customer entered short address: "${message}". 
-Generate an error message matching their language style (${lang}) asking for a complete delivery address. Remind them they can type "cancel" to stop. Be direct and helpful.`;
+Generate an error message matching their language style (${lang}) asking for a complete delivery address. Remind them they can type "cancel" to stop. Be direct and helpful.
+
+Example responses:
+- English: "Please enter your complete delivery address"
+- Arabizi: "Fadlak add 3onwanak el kamel lal tawseel"
+- Arabic: "يرجى إدخال عنوانك الكامل للتوصيل"
+- French: "Veuillez entrer votre adresse complète de livraison"`;
+    
     return generateOrderQuestion(phone, 'address', null, null, errorPrompt);
   }
 
@@ -567,7 +726,8 @@ async function handleNotesCollection(phone, message) {
   let session = getSession(phone);
   const lang = session.lang || 'en';
 
-  console.log(`Notes collection: ${message}`);
+  console.log(`=== NOTES COLLECTION ===`);
+  console.log(`Message: ${message}`);
 
   const noneKeywords = ['none', 'no', 'nothing', 'لا', 'لا شيء', 'mafi', 'wala shi', 'ninguno', 'nada', 'aucun', 'rien'];
   const isNone = noneKeywords.some(word => 
@@ -590,7 +750,9 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
   const session = getSession(phone);
   const lang = session.lang || 'en';
 
-  console.log(`Order confirmation: ${message}, Session:`, session);
+  console.log(`=== ORDER CONFIRMATION ===`);
+  console.log(`Message: ${message}`);
+  console.log(`Session:`, session);
 
   // Check required fields
   if (!session.customer_name || !session.customer_phone || !session.address) {
