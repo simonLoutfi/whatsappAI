@@ -33,29 +33,32 @@ Message: "${message}"`;
 async function getGeminiResponse(phone, message) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   let session = getSession(phone) || {};
-  const lang = session.lang || await detectLanguage(message);
   
-  // Update language if not set OR if customer switches to Arabic
-  const currentLang = await detectLanguage(message);
-  if (!session.lang || currentLang === 'ar') {
-    session.lang = currentLang;
+  const detectedLang = await detectLanguage(message);
+  
+  // Update session language if it's different from detected language
+  if (!session.lang || session.lang !== detectedLang) {
+    console.log(`Language changed from ${session.lang || 'none'} to ${detectedLang}`);
+    session.lang = detectedLang;
     setSession(phone, session);
   }
 
+  const lang = session.lang;
+
   // Check if customer wants to cancel/stop the order flow
-  if (session.step && isCancellation(message, session.lang)) {
+  if (session.step && isCancellation(message, lang)) {
     clearSession(phone);
-    return getCancellationMessage(session.lang);
+    return getCancellationMessage(lang);
   }
 
   // Check if customer wants to start over or have general conversation during order
-  if (session.step && isRestartOrGeneralChat(message, session.lang)) {
+  if (session.step && isRestartOrGeneralChat(message, lang)) {
     // Clear order session but keep language preference
-    const newSession = { lang: session.lang };
+    const newSession = { lang: lang };
     setSession(phone, newSession);
     
     // Handle as general conversation
-    return await handleGeneralConversation(phone, message, session.lang);
+    return await handleGeneralConversation(phone, message, lang);
   }
 
   // If in order flow, continue with order handling
@@ -210,23 +213,24 @@ async function handleGeneralConversation(phone, message, lang, conversationHisto
   }
 
   // Build context prompt for general conversation with confidence assessment
-  let prompt = `You are a friendly customer service agent. 
+  let prompt = `You are a professional customer service agent. 
 Respond in the detected language style: ${lang}
 
 Language instructions:
-- English (en): respond in English
-- Arabic script (ar): respond ONLY in Arabic script العربية - NO Latin letters, NO mixed language
-- Arabizi/Franco-Arabic (arabizi): respond in Arabizi style (Arabic using English letters like "kifak", "chou", "3endak")
-- French (fr): respond in French
-- Mixed: match their style
+- English (en): respond in formal English
+- Arabic script (ar): respond ONLY in formal Arabic script (العربية) - NO Latin letters, NO mixed language, NO informal terms like "habibi"
+- Arabizi/Franco-Arabic (arabizi): respond in formal Arabizi style (Arabic using English letters) - NO informal terms
+- French (fr): respond in formal French
+- Mixed: match their style but remain professional
 
 CRITICAL ARABIC INSTRUCTIONS:
-- If lang is "ar", you MUST respond ONLY in Arabic script (العربية)
+- If lang is "ar", you MUST respond ONLY in formal Arabic script (العربية)
+- Use professional language - NO "habibi", "yaani", or other colloquial terms
 - Do NOT mix Arabic and Latin letters when lang is "ar"
 - Use proper Arabic vocabulary for products: تفاح (apple), موز (banana), خوخ (peach)
-- When customer says they don't understand English, respond purely in Arabic
+- Maintain professional tone at all times
 
-IMPORTANT: Be natural and conversational. Give ONE clear, direct response. DO NOT include multiple examples or instructional phrases.
+IMPORTANT: Be professional and formal. Give ONE clear, direct response. DO NOT include multiple examples or instructional phrases.
 
 CRITICAL ORDER INSTRUCTIONS:
 - If customer shows ANY order intent (wants to buy/order something), respond naturally but remind them to use these EXACT phrases:
@@ -341,10 +345,23 @@ async function initializeOrderFlow(phone, message, stock, profile, lang) {
   return generateOrderQuestion(phone, 'product', stock, profile);
 }
 
+// Replace the handleOrderFlow function in geminiHandler.js
+
 async function handleOrderFlow(phone, message) {
   let session = getSession(phone) || {};
   const { stock, business_profiles } = await getFaqAndStock();
   const profile = business_profiles[0];
+  
+  // FIXED: Always detect language for each message in order flow too
+  const detectedLang = await detectLanguage(message);
+  
+  // Update session language if it changed
+  if (session.lang !== detectedLang) {
+    console.log(`Language changed in order flow from ${session.lang} to ${detectedLang}`);
+    session.lang = detectedLang;
+    setSession(phone, session);
+  }
+  
   const lang = session.lang || 'en';
 
   console.log(`=== HANDLING ORDER FLOW ===`);
@@ -409,23 +426,23 @@ async function generateOrderQuestion(phone, step, stock, profile, customPrompt) 
     prompt = customPrompt;
   } else {
     // Language instructions based on detected language
-    let langInstruction = '';
-    switch (lang) {
-      case 'ar':
-        langInstruction = 'Respond ONLY in Arabic script (العربية) - NO Latin letters, NO mixed language';
-        break;
-      case 'arabizi':
-        langInstruction = 'Respond in Arabizi/Franco-Arabic (Arabic using English letters like "kifak", "chou", "3endak", "badak")';
-        break;
-      case 'fr':
-        langInstruction = 'Respond in French';
-        break;
-      case 'mixed':
-        langInstruction = 'Match the customer\'s mixed language style';
-        break;
-      default:
-        langInstruction = 'Respond in English';
-    }
+let langInstruction = '';
+switch (lang) {
+  case 'ar':
+    langInstruction = 'Respond ONLY in formal Arabic script (العربية) - NO Latin letters, NO mixed language, NO informal terms';
+    break;
+  case 'arabizi':
+    langInstruction = 'Respond in formal Arabizi/Franco-Arabic (Arabic using English letters) - NO informal terms like "habibi"';
+    break;
+  case 'fr':
+    langInstruction = 'Respond in formal French';
+    break;
+  case 'mixed':
+    langInstruction = 'Match the customer\'s mixed language style but remain professional';
+    break;
+  default:
+    langInstruction = 'Respond in formal English';
+}
 
     // CRITICAL: Added instruction to prevent multiple examples
     const commonInstruction = `${langInstruction}. 
@@ -763,8 +780,8 @@ async function handleOrderConfirmation(phone, message, stock, profile) {
       
       const totalAmount = session.product_price * session.quantity;
       const successMessages = {
-        'ar': `✅ تم تأكيد الطلب!\n\nرقم الطلب: ${result.order_number}\nالمنتج: ${session.product}\nالكمية: ${session.quantity}\nسعر الوحدة: ${session.product_price}\nالإجمالي: ${totalAmount}\nالاسم: ${session.customer_name}\nالهاتف: ${session.customer_phone}\nالتوصيل إلى: ${session.address}\n${session.notes ? `ملاحظات: ${session.notes}\n` : ''}\nشكراً لك! سنتواصل معك قريباً.`,
-        'arabizi': `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${session.product}\nQuantity: ${session.quantity}\nUnit Price: ${session.product_price}\nTotal: ${totalAmount}\nIsm: ${session.customer_name}\nTelefon: ${session.customer_phone}\nTawseel 3ala: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nShukran! Ra7 nit2asal ma3ak 2ariban.`,
+  'ar': `✅ تم تأكيد الطلب بنجاح\n\nرقم الطلب: ${result.order_number}\nالمنتج: ${session.product}\nالكمية: ${session.quantity}\nسعر الوحدة: ${session.product_price}\nالإجمالي: ${totalAmount}\nاسم العميل: ${session.customer_name}\nرقم الهاتف: ${session.customer_phone}\nعنوان التوصيل: ${session.address}\n${session.notes ? `ملاحظات إضافية: ${session.notes}\n` : ''}\nنشكركم على ثقتكم بنا. سيتم التواصل معكم قريباً.`,
+  'arabizi': `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${session.product}\nQuantity: ${session.quantity}\nUnit Price: ${session.product_price}\nTotal: ${totalAmount}\nCustomer Name: ${session.customer_name}\nPhone: ${session.customer_phone}\nDelivery Address: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nThank you for your order. We will contact you soon.`,
         'fr': `✅ Commande Confirmée!\n\nCommande #: ${result.order_number}\nProduit: ${session.product}\nQuantité: ${session.quantity}\nPrix unitaire: ${session.product_price}\nTotal: ${totalAmount}\nClient: ${session.customer_name}\nTéléphone: ${session.customer_phone}\nLivraison à: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nMerci! Nous vous contacterons bientôt.`,
         'en': `✅ Order Confirmed!\n\nOrder #: ${result.order_number}\nProduct: ${session.product}\nQuantity: ${session.quantity}\nUnit Price: ${session.product_price}\nTotal: ${totalAmount}\nCustomer: ${session.customer_name}\nPhone: ${session.customer_phone}\nDelivery to: ${session.address}\n${session.notes ? `Notes: ${session.notes}\n` : ''}\nThank you for your order! We'll contact you soon.`
       };
