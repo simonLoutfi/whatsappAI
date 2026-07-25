@@ -1,6 +1,6 @@
 import google.generativeai as genai
 
-genai.configure(api_key="AIzaSyAgXyRgMu-SCbHiBidZWwfJE4ZHQpvR-as")
+genai.configure(api_key="")
 
 def classify_message(message):
     model = genai.GenerativeModel("gemini-2.0-flash")
